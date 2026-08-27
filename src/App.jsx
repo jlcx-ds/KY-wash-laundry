@@ -27,6 +27,7 @@ const INITIAL_MACHINES = Array.from({ length: 12 }, (_, i) => {
     index: (i % 6) + 1,
     status: 'idle', // 'idle' | 'running' | 'pending_collection' | 'locked'
     startedBy: null,
+    startedPhone: null,
     startedAt: null,
     endsAt: null,
     modeName: null,
@@ -105,22 +106,29 @@ export async function leaveWaitlist(type, entryId) {
   await deleteDoc(doc(db, `${type}Waitlist`, entryId))
 }
 
-export async function startMachine({ id, userId, mode, minutes }) {
+export async function startMachine({ id, user, mode, minutes }) {
   const now = Date.now()
   const endsAt = now + minutes * 60 * 1000
   const machineRef = doc(db, 'machines', id)
 
   await updateDoc(machineRef, {
     status: 'running',
-    startedBy: userId,
+    startedBy: user.userId,
+    startedPhone: user.phone || 'N/A',
     startedAt: now,
     endsAt,
     modeName: mode.name,
   })
 
+  // Format machine label for history: W1-W6 or D1-D6
+  const machineDoc = INITIAL_MACHINES.find(m => m.id === id)
+  const codeLabel = machineDoc ? `${machineDoc.type === 'washer' ? 'W' : 'D'}${machineDoc.index}` : id
+
   await addDoc(collection(db, 'history'), {
-    userId,
+    userId: user.userId,
+    phone: user.phone || 'N/A',
     machineId: id,
+    machineLabel: codeLabel,
     action: 'STARTED',
     mode: mode.name,
     timestamp: now,
@@ -132,9 +140,13 @@ export async function cancelMachine({ id, userId }) {
   const snap = await getDoc(machineRef)
   const mData = snap.data()
 
+  const machineDoc = INITIAL_MACHINES.find(m => m.id === id)
+  const codeLabel = machineDoc ? `${machineDoc.type === 'washer' ? 'W' : 'D'}${machineDoc.index}` : id
+
   await updateDoc(machineRef, {
     status: 'idle',
     startedBy: null,
+    startedPhone: null,
     startedAt: null,
     endsAt: null,
     modeName: null,
@@ -143,6 +155,7 @@ export async function cancelMachine({ id, userId }) {
   await addDoc(collection(db, 'history'), {
     userId,
     machineId: id,
+    machineLabel: codeLabel,
     action: 'CANCELLED',
     mode: mData?.modeName || 'N/A',
     timestamp: Date.now(),
@@ -159,9 +172,13 @@ export async function setCollected({ id, userId }) {
   const snap = await getDoc(machineRef)
   const mData = snap.data()
 
+  const machineDoc = INITIAL_MACHINES.find(m => m.id === id)
+  const codeLabel = machineDoc ? `${machineDoc.type === 'washer' ? 'W' : 'D'}${machineDoc.index}` : id
+
   await updateDoc(machineRef, {
     status: 'idle',
     startedBy: null,
+    startedPhone: null,
     startedAt: null,
     endsAt: null,
     modeName: null,
@@ -170,9 +187,22 @@ export async function setCollected({ id, userId }) {
   await addDoc(collection(db, 'history'), {
     userId,
     machineId: id,
+    machineLabel: codeLabel,
     action: 'COLLECTED',
     mode: mData?.modeName || 'N/A',
     timestamp: Date.now(),
+  })
+}
+
+export async function forceResetMachine({ id }) {
+  const machineRef = doc(db, 'machines', id)
+  await updateDoc(machineRef, {
+    status: 'idle',
+    startedBy: null,
+    startedPhone: null,
+    startedAt: null,
+    endsAt: null,
+    modeName: null,
   })
 }
 
@@ -216,6 +246,20 @@ export async function loginUser({ userId, password }) {
     throw new Error('Invalid password.')
   }
   return data
+}
+
+export async function resetPassword({ userId, phone, newPassword }) {
+  const userRef = doc(db, 'users', userId)
+  const snap = await getDoc(userRef)
+  if (!snap.exists()) {
+    throw new Error('User ID not found.')
+  }
+  const data = snap.data()
+  if (data.phone !== phone) {
+    throw new Error('Phone number does not match this User ID.')
+  }
+  await updateDoc(userRef, { password: newPassword })
+  return { ...data, password: newPassword }
 }
 
 export async function updateProfile(oldUserId, { userId, phone, password }) {
@@ -412,22 +456,25 @@ function FoundersSection() {
   )
 }
 
-// --- Auth Component (Create Account / Login) ---
+// --- Auth Component (Login / Register / Forgot Password) ---
 function Auth({ onAuthed }) {
-  const [isRegister, setIsRegister] = useState(true)
+  const [mode, setMode] = useState('login') // 'login' | 'register' | 'forgot'
   const [userId, setUserId] = useState('')
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
+    setSuccess('')
     setLoading(true)
 
     try {
-      if (isRegister) {
+      if (mode === 'register') {
         if (!/^\d{6}$/.test(userId)) {
           setLoading(false)
           return setError('User ID must be exactly 6 digits.')
@@ -443,12 +490,22 @@ function Auth({ onAuthed }) {
 
         const newUser = await registerUser({ userId, phone, password })
         onAuthed(newUser)
-      } else {
+      } else if (mode === 'login') {
         const user = await loginUser({ userId, password })
         onAuthed(user)
+      } else if (mode === 'forgot') {
+        if (!window.confirm(`Are you sure you want to reset the password for User ID ${userId}?`)) {
+          setLoading(false)
+          return
+        }
+        const updated = await resetPassword({ userId, phone, newPassword })
+        setSuccess('Password successfully reset! You can now log in.')
+        setMode('login')
+        setPassword('')
+        setNewPassword('')
       }
     } catch (err) {
-      setError(err.message || 'Authentication failed.')
+      setError(err.message || 'Authentication operation failed.')
     } finally {
       setLoading(false)
     }
@@ -460,8 +517,14 @@ function Auth({ onAuthed }) {
         <Logo size={56} />
       </div>
 
-      <h3>{isRegister ? 'Create Account' : 'Welcome Back'}</h3>
+      <h3>
+        {mode === 'register' && 'Create Account'}
+        {mode === 'login' && 'Welcome Back'}
+        {mode === 'forgot' && 'Reset Password'}
+      </h3>
+
       {error && <div className="error-msg">{error}</div>}
+      {success && <div className="success-msg">{success}</div>}
 
       <form onSubmit={handleSubmit}>
         <div className="field">
@@ -476,9 +539,9 @@ function Auth({ onAuthed }) {
           />
         </div>
 
-        {isRegister && (
+        {(mode === 'register' || mode === 'forgot') && (
           <div className="field">
-            <label>Phone Number (10-11 digits)</label>
+            <label>Registered Phone Number</label>
             <input
               type="tel"
               placeholder="e.g. 0123456789"
@@ -489,26 +552,71 @@ function Auth({ onAuthed }) {
           </div>
         )}
 
-        <div className="field">
-          <label>Password</label>
-          <input
-            type="password"
-            placeholder="Enter password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-        </div>
+        {mode === 'login' && (
+          <div className="field">
+            <label>Password</label>
+            <input
+              type="password"
+              placeholder="Enter password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </div>
+        )}
 
-        <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
-          {loading ? 'Please wait...' : isRegister ? 'Register' : 'Log In'}
+        {mode === 'register' && (
+          <div className="field">
+            <label>Password</label>
+            <input
+              type="password"
+              placeholder="Create password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </div>
+        )}
+
+        {mode === 'forgot' && (
+          <div className="field">
+            <label>New Password</label>
+            <input
+              type="password"
+              placeholder="Enter new password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              required
+            />
+          </div>
+        )}
+
+        <button type="submit" className="btn btn-primary btn-block" disabled={loading} style={{ marginTop: '12px' }}>
+          {loading ? 'Please wait...' : mode === 'register' ? 'Register' : mode === 'login' ? 'Log In' : 'Confirm Password Reset'}
         </button>
       </form>
 
-      <div style={{ textAlign: 'center', marginTop: 16 }}>
-        <button className="btn-link" onClick={() => setIsRegister(!isRegister)}>
-          {isRegister ? 'Already have an account? Log In' : 'Need an account? Create One'}
-        </button>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center', marginTop: 16 }}>
+        {mode === 'login' && (
+          <>
+            <button className="btn-link" onClick={() => setMode('forgot')} style={{ fontSize: '0.85rem' }}>
+              Forgot Password?
+            </button>
+            <button className="btn-link" onClick={() => setMode('register')}>
+              Need an account? Create One
+            </button>
+          </>
+        )}
+        {mode === 'register' && (
+          <button className="btn-link" onClick={() => setMode('login')}>
+            Already have an account? Log In
+          </button>
+        )}
+        {mode === 'forgot' && (
+          <button className="btn-link" onClick={() => setMode('login')}>
+            Back to Log In
+          </button>
+        )}
       </div>
     </div>
   )
@@ -519,11 +627,12 @@ function MachinesTab({
   machines,
   washerWaitlist,
   dryerWaitlist,
-  currentUserId,
+  currentUser,
   onStart,
   onCancel,
   onOnTheWay,
   onCollected,
+  onForceReset,
   onJoinWaitlist,
   onLeaveWaitlist,
   onReportIssue,
@@ -542,6 +651,10 @@ function MachinesTab({
     { name: 'Extra Dry', minutes: 40 },
   ]
 
+  // Check if current user has an active washer or dryer running anywhere
+  const userHasActiveWasher = machines.some(m => m.type === 'washer' && m.startedBy === currentUser.userId && m.status === 'running')
+  const userHasActiveDryer = machines.some(m => m.type === 'dryer' && m.startedBy === currentUser.userId && m.status === 'running')
+
   const submitReport = (mId) => {
     if (!issueDesc.trim()) return
     onReportIssue(mId, issueDesc)
@@ -550,8 +663,13 @@ function MachinesTab({
   }
 
   const renderWaitlist = (type, list) => {
-    const userEntry = list.find((e) => e.userId === currentUserId)
+    const userEntry = list.find((e) => e.userId === currentUser.userId)
     const isWasher = type === 'washer'
+
+    // Restriction rules:
+    // When a user starts a washer, do not allow joining washer waitlist, but allow dryer waitlist.
+    // When a user starts a dryer, do not allow joining dryer waitlist, but allow washer waitlist.
+    const restricted = (isWasher && userHasActiveWasher) || (!isWasher && userHasActiveDryer)
 
     return (
       <div className="waitlist-box" style={{ borderLeft: `5px solid ${isWasher ? '#2563EB' : '#D97706'}` }}>
@@ -561,6 +679,10 @@ function MachinesTab({
             <button className="btn btn-sm btn-danger" onClick={() => onLeaveWaitlist(type, userEntry.id)}>
               Leave Waitlist
             </button>
+          ) : restricted ? (
+            <span style={{ fontSize: '0.8rem', color: '#94A3B8', fontStyle: 'italic' }}>
+              Restricted (Active {isWasher ? 'Washer' : 'Dryer'})
+            </span>
           ) : (
             <button className={`btn btn-sm ${isWasher ? 'btn-primary' : 'btn-sun'}`} onClick={() => onJoinWaitlist(type)}>
               Join Waitlist
@@ -570,7 +692,7 @@ function MachinesTab({
         {list.length > 0 ? (
           <ul className="waitlist-tags">
             {list.map((item, idx) => (
-              <li key={item.id} className={item.userId === currentUserId ? 'mine' : ''}>
+              <li key={item.id} className={item.userId === currentUser.userId ? 'mine' : ''}>
                 #{idx + 1} User {item.userId}
               </li>
             ))}
@@ -583,7 +705,7 @@ function MachinesTab({
   }
 
   const renderMachine = (m) => {
-    const isMine = m.startedBy === currentUserId
+    const isMine = m.startedBy === currentUser.userId
     const isWasher = m.type === 'washer'
     const modes = isWasher ? WASHER_MODES : DRYER_MODES
     const remainingSeconds = getRemainingSeconds(m.endsAt)
@@ -607,7 +729,6 @@ function MachinesTab({
       statusClass = 'status-finished'
     }
 
-    // Dynamic distinct colors to separate washers from dryers visually
     const cardThemeStyle = {
       borderTop: `4px solid ${isWasher ? '#2563EB' : '#D97706'}`,
       background: isWasher ? '#F8FAFC' : '#FFFBEB',
@@ -617,7 +738,7 @@ function MachinesTab({
       <div key={m.id} className={`machine-card ${statusClass}`} style={cardThemeStyle}>
         <div className="machine-header">
           <strong style={{ color: isWasher ? '#1E40AF' : '#92400E' }}>
-            {isWasher ? '🧺 Washer' : '💨 Dryer'} #{m.index}
+            {isWasher ? '🧺 Washer' : '💨 Dryer'} #{m.index} ({isWasher ? `W${m.index}` : `D${m.index}`})
           </strong>
           {m.endsAt && (
             <span className="eta-badge">Est. Finish: {formatMYTime(m.endsAt)}</span>
@@ -629,7 +750,10 @@ function MachinesTab({
 
           {m.status === 'running' && (
             <div className="timer-display">
-              {m.modeName} • User: {m.startedBy}
+              <div>{m.modeName}</div>
+              <div style={{ fontSize: '0.85rem', color: '#475569', marginTop: '2px' }}>
+                👤 ID: {m.startedBy} | 📞 {m.startedPhone}
+              </div>
               {isRunning && (
                 <div style={{ fontSize: '1.2rem', fontWeight: 'bold', marginTop: '4px', color: isWasher ? '#2563EB' : '#D97706' }}>
                   ⏳ {formatCountdown(remainingSeconds)}
@@ -639,7 +763,9 @@ function MachinesTab({
           )}
 
           {m.status === 'pending_collection' && (
-            <div className="info-sub">User {m.startedBy} is on the way!</div>
+            <div className="info-sub">
+              User {m.startedBy} ({m.startedPhone}) is on the way!
+            </div>
           )}
 
           <div className="action-row">
@@ -675,9 +801,37 @@ function MachinesTab({
               </>
             )}
 
+            {/* "Machine Empty" button for other users when cycle is finished and user hasn't retrieved */}
+            {m.status === 'running' && isFinished && !isMine && (
+              <button
+                className="btn btn-sm btn-danger"
+                onClick={() => {
+                  if (window.confirm(`Are you sure you want to mark ${isWasher ? `W${m.index}` : `D${m.index}`} as empty? This will reset the machine because clothes were left unclaimed.`)) {
+                    onForceReset(m.id)
+                  }
+                }}
+              >
+                🧹 Machine Empty
+              </button>
+            )}
+
             {m.status === 'pending_collection' && isMine && (
               <button className="btn btn-sm btn-primary" onClick={() => onCollected(m.id)}>
                 Clothes Collected
+              </button>
+            )}
+
+            {/* "Machine Empty" button for other users during pending_collection stage */}
+            {m.status === 'pending_collection' && !isMine && (
+              <button
+                className="btn btn-sm btn-danger"
+                onClick={() => {
+                  if (window.confirm(`Are you sure you want to force empty ${isWasher ? `W${m.index}` : `D${m.index}`}?`)) {
+                    onForceReset(m.id)
+                  }
+                }}
+              >
+                🧹 Machine Empty
               </button>
             )}
 
@@ -718,12 +872,12 @@ function MachinesTab({
         {renderWaitlist('dryer', dryerWaitlist)}
       </div>
 
-      <h3 style={{ color: '#1E40AF', borderBottom: '2px solid #2563EB', paddingBottom: '6px' }}>🧺 Washers Section</h3>
+      <h3 style={{ color: '#1E40AF', borderBottom: '2px solid #2563EB', paddingBottom: '6px' }}>🧺 Washers Section (W1 - W6)</h3>
       <div className="grid">
         {machines.filter((m) => m.type === 'washer').map(renderMachine)}
       </div>
 
-      <h3 style={{ color: '#92400E', borderBottom: '2px solid #D97706', paddingBottom: '6px', marginTop: '32px' }}>💨 Dryers Section</h3>
+      <h3 style={{ color: '#92400E', borderBottom: '2px solid #D97706', paddingBottom: '6px', marginTop: '32px' }}>💨 Dryers Section (D1 - D6)</h3>
       <div className="grid">
         {machines.filter((m) => m.type === 'dryer').map(renderMachine)}
       </div>
@@ -731,13 +885,15 @@ function MachinesTab({
   )
 }
 
-// --- History Tab Component ---
+// --- History Tab Component (Filtered strictly to current user only, W1-W6/D1-D6 labels) ---
 function HistoryTab({ history, currentUserId }) {
+  const myHistory = history.filter((h) => h.userId === currentUserId)
+
   return (
     <div className="tab-page">
-      <h3>Cycle History</h3>
-      {history.length === 0 ? (
-        <p className="empty-text">No history records yet.</p>
+      <h3>My Cycle History</h3>
+      {myHistory.length === 0 ? (
+        <p className="empty-text">No history records found for your account.</p>
       ) : (
         <table className="data-table">
           <thead>
@@ -751,12 +907,12 @@ function HistoryTab({ history, currentUserId }) {
             </tr>
           </thead>
           <tbody>
-            {history.map((h) => (
-              <tr key={h.id} className={h.userId === currentUserId ? 'highlight-row' : ''}>
+            {myHistory.map((h) => (
+              <tr key={h.id} className="highlight-row">
                 <td>{formatMYTime(h.timestamp)}</td>
                 <td>{formatMYDate(h.timestamp)}</td>
                 <td>{h.userId}</td>
-                <td>{h.machineId}</td>
+                <td><strong>{h.machineLabel || h.machineId}</strong></td>
                 <td>
                   <span className={`badge badge-${h.action.toLowerCase()}`}>{h.action}</span>
                 </td>
@@ -930,22 +1086,25 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
         <section>
           <h3>Machine Controls (Lock/Unlock)</h3>
           <div className="grid">
-            {machines.map((m) => (
-              <div key={m.id} className="admin-machine-card">
-                <div>
-                  <strong>
-                    {m.type.toUpperCase()} #{m.index}
-                  </strong>
-                  <div className="info-sub">Status: {m.status}</div>
+            {machines.map((m) => {
+              const codeLabel = `${m.type === 'washer' ? 'W' : 'D'}${m.index}`
+              return (
+                <div key={m.id} className="admin-machine-card">
+                  <div>
+                    <strong>
+                      {m.type.toUpperCase()} #{m.index} ({codeLabel})
+                    </strong>
+                    <div className="info-sub">Status: {m.status}</div>
+                  </div>
+                  <button
+                    className={`btn btn-sm ${m.isLocked ? 'btn-sun' : 'btn-danger'}`}
+                    onClick={() => onLock(m.id, !m.isLocked)}
+                  >
+                    {m.isLocked ? 'Unlock' : 'Lock'}
+                  </button>
                 </div>
-                <button
-                  className={`btn btn-sm ${m.isLocked ? 'btn-sun' : 'btn-danger'}`}
-                  onClick={() => onLock(m.id, !m.isLocked)}
-                >
-                  {m.isLocked ? 'Unlock' : 'Lock'}
-                </button>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </section>
 
@@ -1130,7 +1289,8 @@ export default function App() {
     )
     if (mine && !ringingIds.current.has(mine.id)) {
       ringingIds.current.add(mine.id)
-      ringForCycleComplete(`${mine.type === 'washer' ? 'Washer' : 'Dryer'} #${mine.index}`)
+      const label = `${mine.type === 'washer' ? 'W' : 'D'}${mine.index}`
+      ringForCycleComplete(`${mine.type === 'washer' ? 'Washer' : 'Dryer'} #${mine.index} (${label})`)
       setReadyMachine(mine)
     }
     if (!mine && readyMachine) {
@@ -1154,7 +1314,7 @@ export default function App() {
 
   const handleStart = (id, mode) =>
     guard(async () => {
-      await startMachine({ id, userId: currentUser.userId, mode, minutes: mode.minutes })
+      await startMachine({ id, user: currentUser, mode, minutes: mode.minutes })
     })
 
   const handleCancel = (id) =>
@@ -1173,6 +1333,12 @@ export default function App() {
       stopAlarm()
       ringingIds.current.delete(id)
       setReadyMachine(null)
+    })
+
+  const handleForceReset = (id) =>
+    guard(async () => {
+      await forceResetMachine({ id })
+      showToast('Machine forcibly reset and marked empty.')
     })
 
   const handleJoinWaitlist = (type) =>
@@ -1280,7 +1446,7 @@ export default function App() {
 
       {readyMachine && (
         <div className="notif-banner">
-          <span>🔔 Your {readyMachine.type} #{readyMachine.index} cycle is done!</span>
+          <span>🔔 Your {readyMachine.type} #{readyMachine.index} ({readyMachine.type === 'washer' ? 'W' : 'D'}{readyMachine.index}) cycle is done!</span>
           <button className="btn btn-sun" onClick={() => handleOnTheWay(readyMachine.id)}>
             On the Way
           </button>
@@ -1296,11 +1462,12 @@ export default function App() {
             machines={machines}
             washerWaitlist={washerWaitlist}
             dryerWaitlist={dryerWaitlist}
-            currentUserId={currentUser.userId}
+            currentUser={currentUser}
             onStart={handleStart}
             onCancel={handleCancel}
             onOnTheWay={handleOnTheWay}
             onCollected={handleCollected}
+            onForceReset={handleForceReset}
             onJoinWaitlist={handleJoinWaitlist}
             onLeaveWaitlist={handleLeaveWaitlist}
             onReportIssue={handleReportIssue}
