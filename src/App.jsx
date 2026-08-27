@@ -120,7 +120,6 @@ export async function startMachine({ id, user, mode, minutes }) {
     modeName: mode.name,
   })
 
-  // Format machine label for history: W1-W6 or D1-D6
   const machineDoc = INITIAL_MACHINES.find(m => m.id === id)
   const codeLabel = machineDoc ? `${machineDoc.type === 'washer' ? 'W' : 'D'}${machineDoc.index}` : id
 
@@ -206,6 +205,10 @@ export async function forceResetMachine({ id }) {
   })
 }
 
+export async function deleteHistoryRecord(historyId) {
+  await deleteDoc(doc(db, 'history', historyId))
+}
+
 export async function reportIssue({ userId, machineId, description }) {
   await addDoc(collection(db, 'issues'), {
     userId,
@@ -216,10 +219,11 @@ export async function reportIssue({ userId, machineId, description }) {
   })
 }
 
-export async function submitFeedback({ userId, message }) {
+export async function submitFeedback({ userId, message, rating }) {
   await addDoc(collection(db, 'feedback'), {
     userId,
     message,
+    rating,
     timestamp: Date.now(),
   })
 }
@@ -278,6 +282,10 @@ export async function sendChatMessage({ userId, message }) {
     message,
     timestamp: Date.now(),
   })
+}
+
+export async function unsendChatMessage(messageId) {
+  await deleteDoc(doc(db, 'chat', messageId))
 }
 
 export async function adminSetLock({ id, locked }) {
@@ -458,7 +466,7 @@ function FoundersSection() {
 
 // --- Auth Component (Login / Register / Forgot Password) ---
 function Auth({ onAuthed }) {
-  const [mode, setMode] = useState('login') // 'login' | 'register' | 'forgot'
+  const [mode, setMode] = useState('login')
   const [userId, setUserId] = useState('')
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
@@ -498,7 +506,7 @@ function Auth({ onAuthed }) {
           setLoading(false)
           return
         }
-        const updated = await resetPassword({ userId, phone, newPassword })
+        await resetPassword({ userId, phone, newPassword })
         setSuccess('Password successfully reset! You can now log in.')
         setMode('login')
         setPassword('')
@@ -651,7 +659,6 @@ function MachinesTab({
     { name: 'Extra Dry', minutes: 40 },
   ]
 
-  // Check if current user has an active washer or dryer running anywhere
   const userHasActiveWasher = machines.some(m => m.type === 'washer' && m.startedBy === currentUser.userId && m.status === 'running')
   const userHasActiveDryer = machines.some(m => m.type === 'dryer' && m.startedBy === currentUser.userId && m.status === 'running')
 
@@ -665,10 +672,6 @@ function MachinesTab({
   const renderWaitlist = (type, list) => {
     const userEntry = list.find((e) => e.userId === currentUser.userId)
     const isWasher = type === 'washer'
-
-    // Restriction rules:
-    // When a user starts a washer, do not allow joining washer waitlist, but allow dryer waitlist.
-    // When a user starts a dryer, do not allow joining dryer waitlist, but allow washer waitlist.
     const restricted = (isWasher && userHasActiveWasher) || (!isWasher && userHasActiveDryer)
 
     return (
@@ -801,7 +804,6 @@ function MachinesTab({
               </>
             )}
 
-            {/* "Machine Empty" button for other users when cycle is finished and user hasn't retrieved */}
             {m.status === 'running' && isFinished && !isMine && (
               <button
                 className="btn btn-sm btn-danger"
@@ -821,7 +823,6 @@ function MachinesTab({
               </button>
             )}
 
-            {/* "Machine Empty" button for other users during pending_collection stage */}
             {m.status === 'pending_collection' && !isMine && (
               <button
                 className="btn btn-sm btn-danger"
@@ -885,8 +886,8 @@ function MachinesTab({
   )
 }
 
-// --- History Tab Component (Filtered strictly to current user only, W1-W6/D1-D6 labels) ---
-function HistoryTab({ history, currentUserId }) {
+// --- History Tab Component (Filtered strictly to current user only, with delete button) ---
+function HistoryTab({ history, currentUserId, onDelete }) {
   const myHistory = history.filter((h) => h.userId === currentUserId)
 
   return (
@@ -904,6 +905,7 @@ function HistoryTab({ history, currentUserId }) {
               <th>Machine</th>
               <th>Action</th>
               <th>Mode</th>
+              <th style={{ textAlign: 'right' }}>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -917,6 +919,19 @@ function HistoryTab({ history, currentUserId }) {
                   <span className={`badge badge-${h.action.toLowerCase()}`}>{h.action}</span>
                 </td>
                 <td>{h.mode}</td>
+                <td style={{ textAlign: 'right' }}>
+                  <button
+                    className="btn btn-xs btn-danger"
+                    title="Delete history record"
+                    onClick={() => {
+                      if (window.confirm('Are you sure you want to delete this history record?')) {
+                        onDelete(h.id)
+                      }
+                    }}
+                  >
+                    🗑️ Delete
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -926,16 +941,19 @@ function HistoryTab({ history, currentUserId }) {
   )
 }
 
-// --- Feedback Tab Component (Feedback hidden from users, goes only to admin, founders shown) ---
+// --- Feedback Tab Component (Rating out of 5 stars + message) ---
 function FeedbackTab({ currentUserId, onSubmit }) {
   const [msg, setMsg] = useState('')
+  const [rating, setRating] = useState(5)
+  const [hoverRating, setHoverRating] = useState(0)
   const [submitted, setSubmitted] = useState(false)
 
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!msg.trim()) return
-    onSubmit(msg)
+    onSubmit(msg, rating)
     setMsg('')
+    setRating(5)
     setSubmitted(true)
     setTimeout(() => setSubmitted(false), 4000)
   }
@@ -944,12 +962,32 @@ function FeedbackTab({ currentUserId, onSubmit }) {
     <div className="tab-page">
       <h3>Community Feedback & Suggestions</h3>
       <p style={{ color: '#64748B', fontSize: '0.9rem', marginBottom: '16px' }}>
-        Have suggestions or feedback to share? Drop them here. Submissions are sent privately to the administration team.
+        Have suggestions or feedback to share? Drop them here along with a star rating. Submissions are sent privately to the administration team.
       </p>
 
       {submitted && <div className="success-msg" style={{ marginBottom: '16px' }}>Feedback submitted successfully to admins!</div>}
 
       <form onSubmit={handleSubmit} className="feedback-form">
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500', color: '#1E293B' }}>Rating (1 to 5 Stars):</label>
+          <div style={{ display: 'flex', gap: '6px', fontSize: '1.5rem', cursor: 'pointer' }}>
+            {[1, 2, 3, 4, 5].map((star) => (
+              <span
+                key={star}
+                onMouseEnter={() => setHoverRating(star)}
+                onMouseLeave={() => setHoverRating(0)}
+                onClick={() => setRating(star)}
+                style={{ color: (hoverRating || rating) >= star ? '#EAB308' : '#CBD5E1', transition: 'color 0.15s' }}
+              >
+                ★
+              </span>
+            ))}
+            <span style={{ alignSelf: 'center', fontSize: '1rem', marginLeft: '8px', color: '#64748B', fontWeight: '500' }}>
+              ({rating} / 5)
+            </span>
+          </div>
+        </div>
+
         <textarea
           rows={3}
           placeholder="Share suggestions or feedback..."
@@ -1147,7 +1185,7 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
         </section>
 
         <section style={{ marginTop: 24 }}>
-          <h3>Private User Feedback (Admin Only)</h3>
+          <h3>Private User Feedback & Ratings (Admin Only)</h3>
           {feedback.length === 0 ? (
             <p className="empty-text">No feedback received yet.</p>
           ) : (
@@ -1156,7 +1194,14 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
                 <div key={f.id} className="feedback-card">
                   <div className="fb-header">
                     <strong>User {f.userId}</strong>
-                    <span>{formatMYTime(f.timestamp)}</span>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      {f.rating && (
+                        <span style={{ color: '#EAB308', fontWeight: 'bold' }}>
+                          {'★'.repeat(f.rating)}{'☆'.repeat(5 - f.rating)} ({f.rating}/5)
+                        </span>
+                      )}
+                      <span>{formatMYTime(f.timestamp)}</span>
+                    </div>
                   </div>
                   <p>{f.message}</p>
                 </div>
@@ -1169,8 +1214,8 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
   )
 }
 
-// --- Chat Widget Component ---
-function ChatWidget({ messages, currentUserId, onSend }) {
+// --- Chat Widget Component (with manual unsend button) ---
+function ChatWidget({ messages, currentUserId, onSend, onUnsend }) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
   const bottomRef = useRef(null)
@@ -1201,16 +1246,35 @@ function ChatWidget({ messages, currentUserId, onSend }) {
             </button>
           </div>
           <div className="chat-messages">
-            {messages.map((m) => (
-              <div
-                key={m.id}
-                className={`chat-bubble ${m.userId === currentUserId ? 'mine' : 'other'}`}
-              >
-                <div className="chat-author">User {m.userId}</div>
-                <div className="chat-text">{m.message}</div>
-                <div className="chat-time">{formatMYTime(m.timestamp)}</div>
-              </div>
-            ))}
+            {messages.map((m) => {
+              const isMine = m.userId === currentUserId
+              return (
+                <div
+                  key={m.id}
+                  className={`chat-bubble ${isMine ? 'mine' : 'other'}`}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div className="chat-author">User {m.userId}</div>
+                    {isMine && (
+                      <button
+                        className="btn-link"
+                        style={{ fontSize: '0.7rem', color: '#EF4444', marginLeft: '8px', background: 'none', border: 'none', cursor: 'pointer' }}
+                        title="Unsend message"
+                        onClick={() => {
+                          if (window.confirm('Are you sure you want to unsend this message?')) {
+                            onUnsend(m.id)
+                          }
+                        }}
+                      >
+                        Unsend
+                      </button>
+                    )}
+                  </div>
+                  <div className="chat-text">{m.message}</div>
+                  <div className="chat-time">{formatMYTime(m.timestamp)}</div>
+                </div>
+              )
+            })}
             <div ref={bottomRef} />
           </div>
           <form onSubmit={handleSend} className="chat-input-row">
@@ -1232,7 +1296,6 @@ function ChatWidget({ messages, currentUserId, onSend }) {
 
 // --- Main App Root ---
 export default function App() {
-  // Auto-login persistence using localStorage
   const [currentUser, setCurrentUser] = useState(() => {
     const savedUser = localStorage.getItem('ky_wash_current_user')
     return savedUser ? JSON.parse(savedUser) : null
@@ -1254,7 +1317,6 @@ export default function App() {
   const ringingIds = useRef(new Set())
   useTick(1000)
 
-  // Wrapper for updating user state & saving to local storage for auto-login retention
   const handleSetUser = (user) => {
     setCurrentUser(user)
     if (user) {
@@ -1341,6 +1403,12 @@ export default function App() {
       showToast('Machine forcibly reset and marked empty.')
     })
 
+  const handleDeleteHistory = (historyId) =>
+    guard(async () => {
+      await deleteHistoryRecord(historyId)
+      showToast('History record deleted.')
+    })
+
   const handleJoinWaitlist = (type) =>
     guard(async () => {
       await joinWaitlist({ type, userId: currentUser.userId })
@@ -1357,10 +1425,10 @@ export default function App() {
       showToast('Issue reported. Admins have been notified.')
     })
 
-  const handleFeedback = (message) =>
+  const handleFeedback = (message, rating) =>
     guard(async () => {
-      await submitFeedback({ userId: currentUser.userId, message })
-      showToast('Feedback submitted securely to admins!')
+      await submitFeedback({ userId: currentUser.userId, message, rating })
+      showToast('Feedback and rating submitted securely to admins!')
     })
 
   const handleProfileUpdate = async (updatedUser) => {
@@ -1371,6 +1439,12 @@ export default function App() {
   const handleSendChat = (message) =>
     guard(async () => {
       await sendChatMessage({ userId: currentUser.userId, message })
+    })
+
+  const handleUnsendChat = (messageId) =>
+    guard(async () => {
+      await unsendChatMessage(messageId)
+      showToast('Message unsent.')
     })
 
   const handleAdminLock = (id, locked) =>
@@ -1473,14 +1547,14 @@ export default function App() {
             onReportIssue={handleReportIssue}
           />
         )}
-        {activeTab === 'history' && <HistoryTab history={history} currentUserId={currentUser.userId} />}
+        {activeTab === 'history' && <HistoryTab history={history} currentUserId={currentUser.userId} onDelete={handleDeleteHistory} />}
         {activeTab === 'feedback' && (
           <FeedbackTab currentUserId={currentUser.userId} onSubmit={handleFeedback} />
         )}
         {activeTab === 'profile' && <ProfileTab currentUser={currentUser} onUpdate={handleProfileUpdate} />}
       </div>
 
-      <ChatWidget messages={chat} currentUserId={currentUser.userId} onSend={handleSendChat} />
+      <ChatWidget messages={chat} currentUserId={currentUser.userId} onSend={handleSendChat} onUnsend={handleUnsendChat} />
 
       {toast && <div className={`toast ${toast.type}`}>{toast.message}</div>}
     </div>
