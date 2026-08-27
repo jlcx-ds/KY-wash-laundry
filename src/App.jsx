@@ -1,6 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { db } from './firebase'
+import {
+  collection,
+  doc,
+  getDoc,
+  setDoc,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  serverTimestamp,
+} from 'firebase/firestore'
 
-// --- Mock Firebase/Database Layer (Self-Contained Realtime Simulation) ---
+// --- Constants & Initial Data Seeds ---
 const INITIAL_MACHINES = Array.from({ length: 12 }, (_, i) => {
   const isWasher = i < 6
   return {
@@ -16,195 +30,219 @@ const INITIAL_MACHINES = Array.from({ length: 12 }, (_, i) => {
   }
 })
 
-let globalState = {
-  machines: INITIAL_MACHINES,
-  washerWaitlist: [],
-  dryerWaitlist: [],
-  history: [],
-  feedback: [],
-  issues: [],
-  chat: [],
-  users: {},
+// --- Real-time Firebase Subscriptions & Actions ---
+
+export async function ensureMachinesSeeded() {
+  for (const m of INITIAL_MACHINES) {
+    const ref = doc(db, 'machines', m.id)
+    const snap = await getDoc(ref)
+    if (!snap.exists()) {
+      await setDoc(ref, m)
+    }
+  }
 }
 
-const listeners = new Set()
-function notifyListeners() {
-  listeners.forEach((cb) => cb({ ...globalState }))
-}
-
-export async function ensureMachinesSeeded() {}
 export function subscribeMachines(cb) {
-  const handler = (s) => cb(s.machines)
-  listeners.add(handler)
-  cb(globalState.machines)
-  return () => listeners.delete(handler)
+  return onSnapshot(collection(db, 'machines'), (snapshot) => {
+    const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+    list.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
+    cb(list)
+  })
 }
+
 export function subscribeWaitlist(type, cb) {
-  const handler = (s) => cb(type === 'washer' ? s.washerWaitlist : s.dryerWaitlist)
-  listeners.add(handler)
-  cb(type === 'washer' ? globalState.washerWaitlist : globalState.dryerWaitlist)
-  return () => listeners.delete(handler)
+  const q = query(collection(db, `${type}Waitlist`), orderBy('timestamp', 'asc'))
+  return onSnapshot(q, (snapshot) => {
+    const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+    cb(list)
+  })
 }
+
 export function subscribeHistory(cb) {
-  const handler = (s) => cb(s.history)
-  listeners.add(handler)
-  cb(globalState.history)
-  return () => listeners.delete(handler)
+  const q = query(collection(db, 'history'), orderBy('timestamp', 'desc'))
+  return onSnapshot(q, (snapshot) => {
+    const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+    cb(list)
+  })
 }
+
 export function subscribeFeedback(cb) {
-  const handler = (s) => cb(s.feedback)
-  listeners.add(handler)
-  cb(globalState.feedback)
-  return () => listeners.delete(handler)
+  const q = query(collection(db, 'feedback'), orderBy('timestamp', 'desc'))
+  return onSnapshot(q, (snapshot) => {
+    const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+    cb(list)
+  })
 }
+
 export function subscribeIssues(cb) {
-  const handler = (s) => cb(s.issues)
-  listeners.add(handler)
-  cb(globalState.issues)
-  return () => listeners.delete(handler)
+  const q = query(collection(db, 'issues'), orderBy('timestamp', 'desc'))
+  return onSnapshot(q, (snapshot) => {
+    const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+    cb(list)
+  })
 }
+
 export function subscribeChat(cb) {
-  const handler = (s) => cb(s.chat)
-  listeners.add(handler)
-  cb(globalState.chat)
-  return () => listeners.delete(handler)
+  const q = query(collection(db, 'chat'), orderBy('timestamp', 'asc'))
+  return onSnapshot(q, (snapshot) => {
+    const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+    cb(list)
+  })
 }
 
 export async function joinWaitlist({ type, userId }) {
-  const list = type === 'washer' ? globalState.washerWaitlist : globalState.dryerWaitlist
-  if (list.some((item) => item.userId === userId)) return
-  const entry = { id: Date.now().toString(), userId, timestamp: Date.now() }
-  if (type === 'washer') globalState.washerWaitlist.push(entry)
-  else globalState.dryerWaitlist.push(entry)
-  notifyListeners()
+  await addDoc(collection(db, `${type}Waitlist`), {
+    userId,
+    timestamp: Date.now(),
+  })
 }
 
-export async function leaveWaitlist(entryId) {
-  globalState.washerWaitlist = globalState.washerWaitlist.filter((e) => e.id !== entryId)
-  globalState.dryerWaitlist = globalState.dryerWaitlist.filter((e) => e.id !== entryId)
-  notifyListeners()
+export async function leaveWaitlist(type, entryId) {
+  await deleteDoc(doc(db, `${type}Waitlist`, entryId))
 }
 
 export async function startMachine({ id, userId, mode, minutes }) {
   const now = Date.now()
   const endsAt = now + minutes * 60 * 1000
-  globalState.machines = globalState.machines.map((m) => {
-    if (m.id === id) {
-      return {
-        ...m,
-        status: 'running',
-        startedBy: userId,
-        startedAt: now,
-        endsAt,
-        modeName: mode.name,
-      }
-    }
-    return m
+  const machineRef = doc(db, 'machines', id)
+
+  await updateDoc(machineRef, {
+    status: 'running',
+    startedBy: userId,
+    startedAt: now,
+    endsAt,
+    modeName: mode.name,
   })
-  globalState.history.unshift({
-    id: Date.now().toString(),
+
+  await addDoc(collection(db, 'history'), {
     userId,
     machineId: id,
     action: 'STARTED',
     mode: mode.name,
     timestamp: now,
   })
-  notifyListeners()
 }
 
 export async function cancelMachine({ id, userId }) {
-  const m = globalState.machines.find((x) => x.id === id)
-  globalState.machines = globalState.machines.map((x) =>
-    x.id === id
-      ? { ...x, status: 'idle', startedBy: null, startedAt: null, endsAt: null, modeName: null }
-      : x
-  )
-  globalState.history.unshift({
-    id: Date.now().toString(),
+  const machineRef = doc(db, 'machines', id)
+  const snap = await getDoc(machineRef)
+  const mData = snap.data()
+
+  await updateDoc(machineRef, {
+    status: 'idle',
+    startedBy: null,
+    startedAt: null,
+    endsAt: null,
+    modeName: null,
+  })
+
+  await addDoc(collection(db, 'history'), {
     userId,
     machineId: id,
     action: 'CANCELLED',
-    mode: m?.modeName || 'N/A',
+    mode: mData?.modeName || 'N/A',
     timestamp: Date.now(),
   })
-  notifyListeners()
 }
 
 export async function setOnTheWay({ id, userId }) {
-  globalState.machines = globalState.machines.map((m) =>
-    m.id === id ? { ...m, status: 'pending_collection' } : m
-  )
-  notifyListeners()
+  const machineRef = doc(db, 'machines', id)
+  await updateDoc(machineRef, { status: 'pending_collection' })
 }
 
 export async function setCollected({ id, userId }) {
-  const m = globalState.machines.find((x) => x.id === id)
-  globalState.machines = globalState.machines.map((x) =>
-    x.id === id
-      ? { ...x, status: 'idle', startedBy: null, startedAt: null, endsAt: null, modeName: null }
-      : x
-  )
-  globalState.history.unshift({
-    id: Date.now().toString(),
+  const machineRef = doc(db, 'machines', id)
+  const snap = await getDoc(machineRef)
+  const mData = snap.data()
+
+  await updateDoc(machineRef, {
+    status: 'idle',
+    startedBy: null,
+    startedAt: null,
+    endsAt: null,
+    modeName: null,
+  })
+
+  await addDoc(collection(db, 'history'), {
     userId,
     machineId: id,
     action: 'COLLECTED',
-    mode: m?.modeName || 'N/A',
+    mode: mData?.modeName || 'N/A',
     timestamp: Date.now(),
   })
-  notifyListeners()
 }
 
 export async function reportIssue({ userId, machineId, description }) {
-  globalState.issues.unshift({
-    id: Date.now().toString(),
+  await addDoc(collection(db, 'issues'), {
     userId,
     machineId,
     description,
     resolved: false,
     timestamp: Date.now(),
   })
-  notifyListeners()
 }
 
 export async function submitFeedback({ userId, message }) {
-  globalState.feedback.unshift({
-    id: Date.now().toString(),
+  await addDoc(collection(db, 'feedback'), {
     userId,
     message,
     timestamp: Date.now(),
   })
-  notifyListeners()
+}
+
+export async function registerUser({ userId, phone, password }) {
+  const userRef = doc(db, 'users', userId)
+  const snap = await getDoc(userRef)
+  if (snap.exists()) {
+    throw new Error('User ID already exists. Please log in.')
+  }
+  const userData = { userId, phone, password }
+  await setDoc(userRef, userData)
+  return userData
+}
+
+export async function loginUser({ userId, password }) {
+  const userRef = doc(db, 'users', userId)
+  const snap = await getDoc(userRef)
+  if (!snap.exists()) {
+    throw new Error('User ID not found.')
+  }
+  const data = snap.data()
+  if (data.password !== password) {
+    throw new Error('Invalid password.')
+  }
+  return data
 }
 
 export async function updateProfile(oldUserId, { userId, phone, password }) {
-  delete globalState.users[oldUserId]
-  globalState.users[userId] = { userId, phone, password }
+  if (oldUserId !== userId) {
+    await setDoc(doc(db, 'users', userId), { userId, phone, password })
+    await deleteDoc(doc(db, 'users', oldUserId))
+  } else {
+    await updateDoc(doc(db, 'users', userId), { phone, password })
+  }
   return { userId, phone, password }
 }
 
 export async function sendChatMessage({ userId, message }) {
-  globalState.chat.push({
-    id: Date.now().toString(),
+  await addDoc(collection(db, 'chat'), {
     userId,
     message,
     timestamp: Date.now(),
   })
-  notifyListeners()
 }
 
 export async function adminSetLock({ id, locked }) {
-  globalState.machines = globalState.machines.map((m) =>
-    m.id === id ? { ...m, isLocked: locked, status: locked ? 'locked' : 'idle' } : m
-  )
-  notifyListeners()
+  const machineRef = doc(db, 'machines', id)
+  await updateDoc(machineRef, {
+    isLocked: locked,
+    status: locked ? 'locked' : 'idle',
+  })
 }
 
 export async function resolveIssue(issueId) {
-  globalState.issues = globalState.issues.map((i) =>
-    i.id === issueId ? { ...i, resolved: true } : i
-  )
-  notifyListeners()
+  const issueRef = doc(db, 'issues', issueId)
+  await updateDoc(issueRef, { resolved: true })
 }
 
 // --- Time & Audio Utilities ---
@@ -316,19 +354,19 @@ function Logo({ size = 48 }) {
 // --- Team / Founders Component ---
 function FoundersSection() {
   const founders = [
-  {
-    name: 'Justin Low Chun Xian',
-    scholar: '🔰 Yayasan UEM Scholar',
-    major: '🎓 Data Science',
-    img: '/founders/founderjustin.jpg', // Added /founders/ folder prefix
-  },
-  {
-    name: 'James Low Weng Kean',
-    scholar: '🔰 Khazanah Global Scholar',
-    major: '🎓 Artificial Intelligence',
-    img: '/founders/founderjames.jpg', // Added /founders/ folder prefix
-  },
-]
+    {
+      name: 'Justin Low Chun Xian',
+      scholar: '🔰 Yayasan UEM Scholar',
+      major: '🎓 Data Science',
+      img: '/founders/founderjustin.jpg',
+    },
+    {
+      name: 'James Low Weng Kean',
+      scholar: '🔰 Khazanah Global Scholar',
+      major: '🎓 Artificial Intelligence',
+      img: '/founders/founderjames.jpg',
+    },
+  ]
 
   return (
     <div style={{ marginTop: '36px', borderTop: '1px solid #E2E8F0', paddingTop: '24px' }}>
@@ -377,24 +415,38 @@ function Auth({ onAuthed }) {
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
+    setLoading(true)
 
-    if (isRegister) {
-      if (!/^\d{6}$/.test(userId)) return setError('User ID must be exactly 6 digits.')
-      if (!/^\d{10,11}$/.test(phone)) return setError('Phone number must be 10-11 digits.')
-      if (!password) return setError('Password is required.')
+    try {
+      if (isRegister) {
+        if (!/^\d{6}$/.test(userId)) {
+          setLoading(false)
+          return setError('User ID must be exactly 6 digits.')
+        }
+        if (!/^\d{10,11}$/.test(phone)) {
+          setLoading(false)
+          return setError('Phone number must be 10-11 digits.')
+        }
+        if (!password) {
+          setLoading(false)
+          return setError('Password is required.')
+        }
 
-      globalState.users[userId] = { userId, phone, password }
-      onAuthed({ userId, phone, password })
-    } else {
-      const user = globalState.users[userId]
-      if (!user || user.password !== password) {
-        return setError('Invalid User ID or Password.')
+        const newUser = await registerUser({ userId, phone, password })
+        onAuthed(newUser)
+      } else {
+        const user = await loginUser({ userId, password })
+        onAuthed(user)
       }
-      onAuthed(user)
+    } catch (err) {
+      setError(err.message || 'Authentication failed.')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -444,8 +496,8 @@ function Auth({ onAuthed }) {
           />
         </div>
 
-        <button type="submit" className="btn btn-primary btn-block">
-          {isRegister ? 'Register' : 'Log In'}
+        <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
+          {loading ? 'Please wait...' : isRegister ? 'Register' : 'Log In'}
         </button>
       </form>
 
@@ -494,15 +546,14 @@ function MachinesTab({
   }
 
   const renderWaitlist = (type, list) => {
-    const isUserIn = list.some((e) => e.userId === currentUserId)
     const userEntry = list.find((e) => e.userId === currentUserId)
 
     return (
       <div className="waitlist-box">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h4>{type === 'washer' ? '🧺 Washer' : '💨 Dryer'} Waitlist ({list.length})</h4>
-          {isUserIn ? (
-            <button className="btn btn-sm btn-danger" onClick={() => onLeaveWaitlist(userEntry.id)}>
+          {userEntry ? (
+            <button className="btn btn-sm btn-danger" onClick={() => onLeaveWaitlist(type, userEntry.id)}>
               Leave Waitlist
             </button>
           ) : (
@@ -707,7 +758,7 @@ function HistoryTab({ history, currentUserId }) {
   )
 }
 
-// --- Feedback Tab Component (Including Founders Section) ---
+// --- Feedback Tab Component ---
 function FeedbackTab({ feedback, currentUserId, onSubmit }) {
   const [msg, setMsg] = useState('')
 
@@ -757,18 +808,26 @@ function ProfileTab({ currentUser, onUpdate }) {
   const [phone, setPhone] = useState(currentUser.phone)
   const [password, setPassword] = useState(currentUser.password)
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState('')
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    await onUpdate({ userId, phone, password })
-    setSaved(true)
-    setTimeout(() => setSaved(false), 3000)
+    setError('')
+    try {
+      const updated = await updateProfile(currentUser.userId, { userId, phone, password })
+      onUpdate(updated)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 3000)
+    } catch (err) {
+      setError(err.message || 'Failed to update profile.')
+    }
   }
 
   return (
     <div className="tab-page auth-card" style={{ maxWidth: 450, margin: '0 auto' }}>
       <h3>Edit Profile</h3>
       {saved && <div className="success-msg">Profile updated successfully!</div>}
+      {error && <div className="error-msg">{error}</div>}
       <form onSubmit={handleSubmit}>
         <div className="field">
           <label>6-Digit User ID</label>
@@ -1019,7 +1078,7 @@ export default function App() {
   useTick(1000)
 
   useEffect(() => {
-    ensureMachinesSeeded().catch(() => {})
+    ensureMachinesSeeded().catch((err) => console.error("Seeding error:", err))
     const unsubs = [
       subscribeMachines(setMachines),
       subscribeWaitlist('washer', setWasherWaitlist),
@@ -1093,9 +1152,9 @@ export default function App() {
       await joinWaitlist({ type, userId: currentUser.userId })
     })
 
-  const handleLeaveWaitlist = (entryId) =>
+  const handleLeaveWaitlist = (type, entryId) =>
     guard(async () => {
-      await leaveWaitlist(entryId)
+      await leaveWaitlist(type, entryId)
     })
 
   const handleReportIssue = (machineId, description) =>
@@ -1110,9 +1169,8 @@ export default function App() {
       showToast('Thank you for your feedback!')
     })
 
-  const handleProfileUpdate = async ({ userId, phone, password }) => {
-    const updated = await updateProfile(currentUser.userId, { userId, phone, password })
-    setCurrentUser(updated)
+  const handleProfileUpdate = async (updatedUser) => {
+    setCurrentUser(updatedUser)
     showToast('Profile updated!')
   }
 
