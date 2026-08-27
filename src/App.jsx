@@ -14,6 +14,10 @@ import {
   serverTimestamp,
 } from 'firebase/firestore'
 
+// Fixed image references using public folder asset paths directly
+const justinImg = '/founders/founderjustin.jpg'
+const jamesImg = '/founders/founderjames.jpg'
+
 // --- Constants & Initial Data Seeds ---
 const INITIAL_MACHINES = Array.from({ length: 12 }, (_, i) => {
   const isWasher = i < 6
@@ -358,13 +362,13 @@ function FoundersSection() {
       name: 'Justin Low Chun Xian',
       scholar: '🔰 Yayasan UEM Scholar',
       major: '🎓 Data Science',
-      img: '/founders/founderjustin.jpg',
+      img: justinImg,
     },
     {
       name: 'James Low Weng Kean',
       scholar: '🔰 Khazanah Global Scholar',
       major: '🎓 Artificial Intelligence',
-      img: '/founders/founderjames.jpg',
+      img: jamesImg,
     },
   ]
 
@@ -547,17 +551,18 @@ function MachinesTab({
 
   const renderWaitlist = (type, list) => {
     const userEntry = list.find((e) => e.userId === currentUserId)
+    const isWasher = type === 'washer'
 
     return (
-      <div className="waitlist-box">
+      <div className="waitlist-box" style={{ borderLeft: `5px solid ${isWasher ? '#2563EB' : '#D97706'}` }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h4>{type === 'washer' ? '🧺 Washer' : '💨 Dryer'} Waitlist ({list.length})</h4>
+          <h4>{isWasher ? '🧺 Washer' : '💨 Dryer'} Waitlist ({list.length})</h4>
           {userEntry ? (
             <button className="btn btn-sm btn-danger" onClick={() => onLeaveWaitlist(type, userEntry.id)}>
               Leave Waitlist
             </button>
           ) : (
-            <button className="btn btn-sm btn-primary" onClick={() => onJoinWaitlist(type)}>
+            <button className={`btn btn-sm ${isWasher ? 'btn-primary' : 'btn-sun'}`} onClick={() => onJoinWaitlist(type)}>
               Join Waitlist
             </button>
           )}
@@ -579,7 +584,8 @@ function MachinesTab({
 
   const renderMachine = (m) => {
     const isMine = m.startedBy === currentUserId
-    const modes = m.type === 'washer' ? WASHER_MODES : DRYER_MODES
+    const isWasher = m.type === 'washer'
+    const modes = isWasher ? WASHER_MODES : DRYER_MODES
     const remainingSeconds = getRemainingSeconds(m.endsAt)
     const isRunning = m.status === 'running' && remainingSeconds > 0
     const isFinished = m.status === 'running' && remainingSeconds <= 0
@@ -601,11 +607,17 @@ function MachinesTab({
       statusClass = 'status-finished'
     }
 
+    // Dynamic distinct colors to separate washers from dryers visually
+    const cardThemeStyle = {
+      borderTop: `4px solid ${isWasher ? '#2563EB' : '#D97706'}`,
+      background: isWasher ? '#F8FAFC' : '#FFFBEB',
+    }
+
     return (
-      <div key={m.id} className={`machine-card ${statusClass}`}>
+      <div key={m.id} className={`machine-card ${statusClass}`} style={cardThemeStyle}>
         <div className="machine-header">
-          <strong>
-            {m.type === 'washer' ? 'Washer' : 'Dryer'} #{m.index}
+          <strong style={{ color: isWasher ? '#1E40AF' : '#92400E' }}>
+            {isWasher ? '🧺 Washer' : '💨 Dryer'} #{m.index}
           </strong>
           {m.endsAt && (
             <span className="eta-badge">Est. Finish: {formatMYTime(m.endsAt)}</span>
@@ -619,7 +631,7 @@ function MachinesTab({
             <div className="timer-display">
               {m.modeName} • User: {m.startedBy}
               {isRunning && (
-                <div style={{ fontSize: '1.2rem', fontWeight: 'bold', marginTop: '4px', color: '#2563EB' }}>
+                <div style={{ fontSize: '1.2rem', fontWeight: 'bold', marginTop: '4px', color: isWasher ? '#2563EB' : '#D97706' }}>
                   ⏳ {formatCountdown(remainingSeconds)}
                 </div>
               )}
@@ -636,7 +648,7 @@ function MachinesTab({
                 {modes.map((mode) => (
                   <button
                     key={mode.name}
-                    className="btn btn-sm btn-outline"
+                    className={`btn btn-sm ${isWasher ? 'btn-outline' : 'btn-sun-outline'}`}
                     onClick={() => onStart(m.id, mode)}
                   >
                     {mode.name} ({mode.minutes}m)
@@ -706,12 +718,12 @@ function MachinesTab({
         {renderWaitlist('dryer', dryerWaitlist)}
       </div>
 
-      <h3>Washers</h3>
+      <h3 style={{ color: '#1E40AF', borderBottom: '2px solid #2563EB', paddingBottom: '6px' }}>🧺 Washers Section</h3>
       <div className="grid">
         {machines.filter((m) => m.type === 'washer').map(renderMachine)}
       </div>
 
-      <h3>Dryers</h3>
+      <h3 style={{ color: '#92400E', borderBottom: '2px solid #D97706', paddingBottom: '6px', marginTop: '32px' }}>💨 Dryers Section</h3>
       <div className="grid">
         {machines.filter((m) => m.type === 'dryer').map(renderMachine)}
       </div>
@@ -758,20 +770,29 @@ function HistoryTab({ history, currentUserId }) {
   )
 }
 
-// --- Feedback Tab Component ---
-function FeedbackTab({ feedback, currentUserId, onSubmit }) {
+// --- Feedback Tab Component (Feedback hidden from users, goes only to admin, founders shown) ---
+function FeedbackTab({ currentUserId, onSubmit }) {
   const [msg, setMsg] = useState('')
+  const [submitted, setSubmitted] = useState(false)
 
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!msg.trim()) return
     onSubmit(msg)
     setMsg('')
+    setSubmitted(true)
+    setTimeout(() => setSubmitted(false), 4000)
   }
 
   return (
     <div className="tab-page">
-      <h3>Community Feedback</h3>
+      <h3>Community Feedback & Suggestions</h3>
+      <p style={{ color: '#64748B', fontSize: '0.9rem', marginBottom: '16px' }}>
+        Have suggestions or feedback to share? Drop them here. Submissions are sent privately to the administration team.
+      </p>
+
+      {submitted && <div className="success-msg" style={{ marginBottom: '16px' }}>Feedback submitted successfully to admins!</div>}
+
       <form onSubmit={handleSubmit} className="feedback-form">
         <textarea
           rows={3}
@@ -784,18 +805,6 @@ function FeedbackTab({ feedback, currentUserId, onSubmit }) {
           Submit Feedback
         </button>
       </form>
-
-      <div className="feedback-list" style={{ marginTop: '20px' }}>
-        {feedback.map((f) => (
-          <div key={f.id} className="feedback-card">
-            <div className="fb-header">
-              <strong>User {f.userId}</strong>
-              <span className="fb-time">{formatMYTime(f.timestamp)}</span>
-            </div>
-            <p>{f.message}</p>
-          </div>
-        ))}
-      </div>
 
       <FoundersSection />
     </div>
@@ -979,18 +988,22 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
         </section>
 
         <section style={{ marginTop: 24 }}>
-          <h3>User Feedback</h3>
-          <div className="feedback-list">
-            {feedback.map((f) => (
-              <div key={f.id} className="feedback-card">
-                <div className="fb-header">
-                  <strong>User {f.userId}</strong>
-                  <span>{formatMYTime(f.timestamp)}</span>
+          <h3>Private User Feedback (Admin Only)</h3>
+          {feedback.length === 0 ? (
+            <p className="empty-text">No feedback received yet.</p>
+          ) : (
+            <div className="feedback-list">
+              {feedback.map((f) => (
+                <div key={f.id} className="feedback-card">
+                  <div className="fb-header">
+                    <strong>User {f.userId}</strong>
+                    <span>{formatMYTime(f.timestamp)}</span>
+                  </div>
+                  <p>{f.message}</p>
                 </div>
-                <p>{f.message}</p>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </div>
@@ -1060,7 +1073,12 @@ function ChatWidget({ messages, currentUserId, onSend }) {
 
 // --- Main App Root ---
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(null)
+  // Auto-login persistence using localStorage
+  const [currentUser, setCurrentUser] = useState(() => {
+    const savedUser = localStorage.getItem('ky_wash_current_user')
+    return savedUser ? JSON.parse(savedUser) : null
+  })
+  
   const [activeTab, setActiveTab] = useState('machines')
   const [showAdmin, setShowAdmin] = useState(false)
 
@@ -1076,6 +1094,16 @@ export default function App() {
 
   const ringingIds = useRef(new Set())
   useTick(1000)
+
+  // Wrapper for updating user state & saving to local storage for auto-login retention
+  const handleSetUser = (user) => {
+    setCurrentUser(user)
+    if (user) {
+      localStorage.setItem('ky_wash_current_user', JSON.stringify(user))
+    } else {
+      localStorage.removeItem('ky_wash_current_user')
+    }
+  }
 
   useEffect(() => {
     ensureMachinesSeeded().catch((err) => console.error("Seeding error:", err))
@@ -1166,11 +1194,11 @@ export default function App() {
   const handleFeedback = (message) =>
     guard(async () => {
       await submitFeedback({ userId: currentUser.userId, message })
-      showToast('Thank you for your feedback!')
+      showToast('Feedback submitted securely to admins!')
     })
 
   const handleProfileUpdate = async (updatedUser) => {
-    setCurrentUser(updatedUser)
+    handleSetUser(updatedUser)
     showToast('Profile updated!')
   }
 
@@ -1205,7 +1233,7 @@ export default function App() {
   if (!currentUser) {
     return (
       <>
-        <Auth onAuthed={setCurrentUser} />
+        <Auth onAuthed={handleSetUser} />
         <div style={{ textAlign: 'center', paddingBottom: 24, marginTop: -8 }}>
           <button className="btn btn-ghost btn-sm" onClick={() => setShowAdmin(true)}>
             Admin Login →
@@ -1229,7 +1257,7 @@ export default function App() {
         <div className="topbar-user">
           <span className="clock-my">🇲🇾 {formatMYTime(Date.now())} MYT</span>
           <span className="userchip">👤 User {currentUser.userId}</span>
-          <button className="btn btn-ghost btn-sm" onClick={() => setCurrentUser(null)}>
+          <button className="btn btn-ghost btn-sm" onClick={() => handleSetUser(null)}>
             Log Out
           </button>
         </div>
@@ -1280,7 +1308,7 @@ export default function App() {
         )}
         {activeTab === 'history' && <HistoryTab history={history} currentUserId={currentUser.userId} />}
         {activeTab === 'feedback' && (
-          <FeedbackTab feedback={feedback} currentUserId={currentUser.userId} onSubmit={handleFeedback} />
+          <FeedbackTab currentUserId={currentUser.userId} onSubmit={handleFeedback} />
         )}
         {activeTab === 'profile' && <ProfileTab currentUser={currentUser} onUpdate={handleProfileUpdate} />}
       </div>
