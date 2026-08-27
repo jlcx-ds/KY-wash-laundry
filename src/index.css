@@ -1,0 +1,382 @@
+/* --- Global Resets & Base Variables --- */
+:root {
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --bg-main: #f8fafc;
+  --bg-card: #ffffff;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --border: #e2e8f0;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+}
+
+body {
+  background-color: var(--bg-main);
+  color: var(--text-main);
+  min-height: 100vh;
+  display: block;
+}
+
+/* --- Layout Containers --- */
+.app-shell {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg-card);
+  padding: 12px 20px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.9rem;
+}
+
+.clock-my {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.userchip {
+  background: #eff6ff;
+  color: var(--primary);
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-weight: 600;
+}
+
+/* --- Navigation Tabs --- */
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  overflow-x: auto;
+}
+
+.tab-btn {
+  padding: 10px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: all 0.2s;
+}
+
+.tab-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.tab-btn.active {
+  background: var(--primary);
+  color: #ffffff;
+  border-color: var(--primary);
+}
+
+/* --- Cards & Grids --- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.machine-card, .feedback-card, .admin-machine-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+.machine-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.eta-badge {
+  font-size: 0.75rem;
+  background: #f1f5f9;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.status-label {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.status-idle .status-label { color: var(--success); }
+.status-running .status-label { color: var(--primary); }
+.status-finished .status-label { color: var(--warning); }
+.status-pending .status-label { color: #8b5cf6; }
+.status-locked .status-label { color: var(--danger); }
+
+.timer-display {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+/* --- Buttons & UI Elements --- */
+.btn {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: none;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-primary { background: var(--primary); color: white; }
+.btn-primary:hover { background: var(--primary-hover); }
+
+.btn-danger { background: var(--danger); color: white; }
+.btn-sun { background: var(--warning); color: white; }
+.btn-ghost { background: transparent; color: var(--text-muted); }
+.btn-ghost:hover { background: #f1f5f9; }
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-main);
+}
+.btn-outline:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.btn-sm { padding: 4px 10px; font-size: 0.85rem; }
+.btn-xs { padding: 2px 6px; font-size: 0.75rem; }
+.btn-block { width: 100%; display: block; }
+
+.mode-btn-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* --- Auth Card --- */
+.auth-card {
+  max-width: 400px;
+  margin: 60px auto;
+  background: var(--bg-card);
+  padding: 24px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+}
+
+.auth-card h3 { margin-bottom: 16px; text-align: center; }
+
+.field {
+  margin-bottom: 14px;
+}
+
+.field label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.field input, .feedback-form textarea, .report-modal input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+}
+
+.field input:focus, .feedback-form textarea:focus {
+  border-color: var(--primary);
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--primary);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+/* --- Waitlist Component --- */
+.waitlists-wrapper {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.waitlist-box {
+  background: #f1f5f9;
+  padding: 12px 16px;
+  border-radius: 8px;
+}
+
+.waitlist-tags {
+  display: flex;
+  gap: 8px;
+  list-style: none;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.waitlist-tags li {
+  background: var(--bg-card);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  border: 1px solid var(--border);
+}
+
+.waitlist-tags li.mine {
+  background: #dbeafe;
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* --- Tables --- */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-card);
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.data-table th, .data-table td {
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.data-table th { background: #f8fafc; font-weight: 600; }
+
+/* --- Chat Widget --- */
+.chat-widget {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+}
+
+.chat-toggle-btn {
+  background: var(--primary);
+  color: white;
+  border: none;
+  padding: 12px 20px;
+  border-radius: 30px;
+  box-shadow: 0 4px 12px rgba(37,99,235,0.3);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.chat-window {
+  width: 320px;
+  height: 400px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-header {
+  padding: 12px;
+  background: var(--primary);
+  color: white;
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  border-radius: 12px 12px 0 0;
+}
+
+.chat-messages {
+  flex: 1;
+  padding: 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-bubble {
+  max-width: 80%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.chat-bubble.mine {
+  align-self: flex-end;
+  background: #dbeafe;
+}
+
+.chat-bubble.other {
+  align-self: flex-start;
+  background: #f1f5f9;
+}
+
+.chat-author { font-size: 0.7rem; font-weight: 600; color: var(--text-muted); }
+
+.chat-input-row {
+  display: flex;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  gap: 4px;
+}
+
+/* --- Feedback & Notifications --- */
+.notif-banner {
+  background: #fef3c7;
+  border: 1px solid #fde047;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 20px;
+  border-radius: 20px;
+  color: white;
+  font-size: 0.9rem;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+}
+.toast.success { background: var(--success); }
+.toast.error { background: var(--danger); }
+.error-msg { color: var(--danger); font-size: 0.85rem; margin-bottom: 10px; }
+.empty-text { color: var(--text-muted); font-size: 0.85rem; }
