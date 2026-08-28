@@ -12,6 +12,7 @@ import {
   query,
   orderBy,
   serverTimestamp,
+  getDocs,
 } from 'firebase/firestore'
 
 // Fixed image references using public folder asset paths directly
@@ -106,7 +107,29 @@ export async function leaveWaitlist(type, entryId) {
   await deleteDoc(doc(db, `${type}Waitlist`, entryId))
 }
 
-export async function startMachine({ id, user, mode, minutes }) {
+export async function startMachine({ id, user, mode, minutes, machines, washerWaitlist, dryerWaitlist }) {
+  const machineDocData = INITIAL_MACHINES.find(m => m.id === id)
+  const isWasher = machineDocData ? machineDocData.type === 'washer' : id.includes('1') || Number(id.replace('m_', '')) <= 6
+
+  // Check concurrent active limits:
+  // 1. Cannot start more than one washer concurrently.
+  // 2. Cannot start any machine (washer or dryer) if user already has an active running machine (washer or dryer) until previous completes.
+  if (isWasher) {
+    const activeWasherCount = machines.filter(
+      m => m.type === 'washer' && m.startedBy === user.userId && m.status === 'running'
+    ).length
+    if (activeWasherCount > 0) {
+      throw new Error('You already have an active washer running concurrently. You cannot start more than one washer at the same time.')
+    }
+  }
+
+  const anyActiveRunningMachine = machines.some(
+    m => m.startedBy === user.userId && m.status === 'running'
+  )
+  if (anyActiveRunningMachine) {
+    throw new Error('You already have an active machine cycle running. You cannot start another machine until your previous machine cycle completes.')
+  }
+
   const now = Date.now()
   const endsAt = now + minutes * 60 * 1000
   const machineRef = doc(db, 'machines', id)
@@ -120,8 +143,7 @@ export async function startMachine({ id, user, mode, minutes }) {
     modeName: mode.name,
   })
 
-  const machineDoc = INITIAL_MACHINES.find(m => m.id === id)
-  const codeLabel = machineDoc ? `${machineDoc.type === 'washer' ? 'W' : 'D'}${machineDoc.index}` : id
+  const codeLabel = machineDocData ? `${machineDocData.type === 'washer' ? 'W' : 'D'}${machineDocData.index}` : id
 
   await addDoc(collection(db, 'history'), {
     userId: user.userId,
@@ -132,6 +154,19 @@ export async function startMachine({ id, user, mode, minutes }) {
     mode: mode.name,
     timestamp: now,
   })
+
+  // Automatically remove user from waitlist if present
+  if (isWasher && washerWaitlist) {
+    const entry = washerWaitlist.find(e => e.userId === user.userId)
+    if (entry) {
+      await deleteDoc(doc(db, 'washerWaitlist', entry.id))
+    }
+  } else if (!isWasher && dryerWaitlist) {
+    const entry = dryerWaitlist.find(e => e.userId === user.userId)
+    if (entry) {
+      await deleteDoc(doc(db, 'dryerWaitlist', entry.id))
+    }
+  }
 }
 
 export async function cancelMachine({ id, userId }) {
@@ -886,15 +921,81 @@ function MachinesTab({
   )
 }
 
-// --- History Tab Component (Filtered strictly to current user only, with delete button) ---
+// --- History Tab Component (Filtered strictly to current user only, with month/week filtering) ---
 function HistoryTab({ history, currentUserId, onDelete }) {
+  const [filterType, setFilterType] = useState('all') // 'all' | 'month' | 'week'
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  })
+  const [selectedWeek, setSelectedWeek] = useState(() => {
+    const now = new Date()
+    const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()))
+    const dayNum = d.getUTCDay() || 7
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+    const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+    return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
+  })
+
   const myHistory = history.filter((h) => h.userId === currentUserId)
+
+  const filteredHistory = myHistory.filter((h) => {
+    if (!h.timestamp) return false
+    const date = new Date(h.timestamp)
+    if (filterType === 'month') {
+      const mStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+      return mStr === selectedMonth
+    }
+    if (filterType === 'week') {
+      const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+      const dayNum = d.getUTCDay() || 7
+      d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+      const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+      const wStr = `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
+      return wStr === selectedWeek
+    }
+    return true
+  })
 
   return (
     <div className="tab-page">
-      <h3>My Cycle History</h3>
-      {myHistory.length === 0 ? (
-        <p className="empty-text">No history records found for your account.</p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '12px' }}>
+        <h3>My Cycle History</h3>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <select
+            value={filterType}
+            onChange={(e) => setFilterType(e.target.value)}
+            style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+          >
+            <option value="all">All Time</option>
+            <option value="month">Filter by Month</option>
+            <option value="week">Filter by Week</option>
+          </select>
+
+          {filterType === 'month' && (
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+            />
+          )}
+
+          {filterType === 'week' && (
+            <input
+              type="week"
+              value={selectedWeek}
+              onChange={(e) => setSelectedWeek(e.target.value)}
+              style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+            />
+          )}
+        </div>
+      </div>
+
+      {filteredHistory.length === 0 ? (
+        <p className="empty-text">No history records found for your account matching this filter.</p>
       ) : (
         <table className="data-table">
           <thead>
@@ -909,7 +1010,7 @@ function HistoryTab({ history, currentUserId, onDelete }) {
             </tr>
           </thead>
           <tbody>
-            {myHistory.map((h) => (
+            {filteredHistory.map((h) => (
               <tr key={h.id} className="highlight-row">
                 <td>{formatMYTime(h.timestamp)}</td>
                 <td>{formatMYDate(h.timestamp)}</td>
@@ -1073,6 +1174,20 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
   const [adminPass, setAdminPass] = useState('')
   const [authed, setAuthed] = useState(false)
   const [error, setError] = useState('')
+  const [exportType, setExportType] = useState('month')
+  const [exportMonth, setExportMonth] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  })
+  const [exportWeek, setExportWeek] = useState(() => {
+    const now = new Date()
+    const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()))
+    const dayNum = d.getUTCDay() || 7
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+    const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+    return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
+  })
 
   const handleLogin = (e) => {
     e.preventDefault()
@@ -1081,6 +1196,55 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
       setError('')
     } else {
       setError('Incorrect admin password!')
+    }
+  }
+
+  const handleExportCSV = async () => {
+    try {
+      const snap = await getDocs(collection(db, 'history'))
+      const allHistory = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+
+      const filtered = allHistory.filter((h) => {
+        if (!h.timestamp) return false
+        const date = new Date(h.timestamp)
+        if (exportType === 'month') {
+          const mStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+          return mStr === exportMonth
+        } else {
+          const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+          const dayNum = d.getUTCDay() || 7
+          d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+          const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+          const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+          const wStr = `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
+          return wStr === exportWeek
+        }
+      })
+
+      if (filtered.length === 0) {
+        alert('No history records found for the selected period to export.')
+        return
+      }
+
+      let csvContent = 'data:text/csv;charset=utf-8,'
+      csvContent += 'ID,Timestamp,Date,Time (MYT),User ID,Phone,Machine,Action,Mode\n'
+
+      filtered.forEach((row) => {
+        const dateStr = formatMYDate(row.timestamp)
+        const timeStr = formatMYTime(row.timestamp)
+        csvContent += `"${row.id}","${row.timestamp}","${dateStr}","${timeStr}","${row.userId}","${row.phone || 'N/A'}","${row.machineLabel || row.machineId}","${row.action}","${row.mode || 'N/A'}"\n`
+      })
+
+      const encodedUri = encodeURI(csvContent)
+      const link = document.createElement('a')
+      link.setAttribute('href', encodedUri)
+      link.setAttribute('download', `ky_wash_history_${exportType === 'month' ? exportMonth : exportWeek}.csv`)
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    } catch (err) {
+      console.error('Export error:', err)
+      alert('Failed to export CSV data.')
     }
   }
 
@@ -1121,6 +1285,40 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
       </div>
 
       <div className="admin-content">
+        <section style={{ background: '#FFF', padding: '16px', borderRadius: '8px', border: '1px solid #E2E8F0', marginBottom: '24px' }}>
+          <h3>📥 Export History Data (CSV)</h3>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', marginTop: '12px' }}>
+            <select
+              value={exportType}
+              onChange={(e) => setExportType(e.target.value)}
+              style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+            >
+              <option value="month">Export by Month</option>
+              <option value="week">Export by Week</option>
+            </select>
+
+            {exportType === 'month' ? (
+              <input
+                type="month"
+                value={exportMonth}
+                onChange={(e) => setExportMonth(e.target.value)}
+                style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+              />
+            ) : (
+              <input
+                type="week"
+                value={exportWeek}
+                onChange={(e) => setExportWeek(e.target.value)}
+                style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+              />
+            )}
+
+            <button className="btn btn-primary btn-sm" onClick={handleExportCSV}>
+              Download CSV
+            </button>
+          </div>
+        </section>
+
         <section>
           <h3>Machine Controls (Lock/Unlock)</h3>
           <div className="grid">
@@ -1376,7 +1574,15 @@ export default function App() {
 
   const handleStart = (id, mode) =>
     guard(async () => {
-      await startMachine({ id, user: currentUser, mode, minutes: mode.minutes })
+      await startMachine({
+        id,
+        user: currentUser,
+        mode,
+        minutes: mode.minutes,
+        machines,
+        washerWaitlist,
+        dryerWaitlist,
+      })
     })
 
   const handleCancel = (id) =>
