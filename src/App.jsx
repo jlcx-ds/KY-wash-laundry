@@ -111,9 +111,6 @@ export async function startMachine({ id, user, mode, minutes, machines, washerWa
   const machineDocData = INITIAL_MACHINES.find(m => m.id === id)
   const isWasher = machineDocData ? machineDocData.type === 'washer' : id.includes('1') || Number(id.replace('m_', '')) <= 6
 
-  // Check concurrent active limits:
-  // 1. Cannot start more than one washer concurrently.
-  // 2. Cannot start any machine (washer or dryer) if user already has an active running machine (washer or dryer) until previous completes.
   if (isWasher) {
     const activeWasherCount = machines.filter(
       m => m.type === 'washer' && m.startedBy === user.userId && m.status === 'running'
@@ -155,7 +152,6 @@ export async function startMachine({ id, user, mode, minutes, machines, washerWa
     timestamp: now,
   })
 
-  // Automatically remove user from waitlist if present
   if (isWasher && washerWaitlist) {
     const entry = washerWaitlist.find(e => e.userId === user.userId)
     if (entry) {
@@ -254,22 +250,27 @@ export async function reportIssue({ userId, machineId, description }) {
   })
 }
 
-export async function submitFeedback({ userId, message, rating }) {
+export async function submitFeedback({ userId, fullName, message, rating }) {
   await addDoc(collection(db, 'feedback'), {
     userId,
+    fullName: fullName || '',
     message,
     rating,
     timestamp: Date.now(),
   })
 }
 
-export async function registerUser({ userId, phone, password }) {
+export async function deleteFeedbackRecord(feedbackId) {
+  await deleteDoc(doc(db, 'feedback', feedbackId))
+}
+
+export async function registerUser({ fullName, userId, phone, password }) {
   const userRef = doc(db, 'users', userId)
   const snap = await getDoc(userRef)
   if (snap.exists()) {
     throw new Error('User ID already exists. Please log in.')
   }
-  const userData = { userId, phone, password }
+  const userData = { fullName, userId, phone, password }
   await setDoc(userRef, userData)
   return userData
 }
@@ -301,14 +302,14 @@ export async function resetPassword({ userId, phone, newPassword }) {
   return { ...data, password: newPassword }
 }
 
-export async function updateProfile(oldUserId, { userId, phone, password }) {
+export async function updateProfile(oldUserId, { fullName, userId, phone, password }) {
   if (oldUserId !== userId) {
-    await setDoc(doc(db, 'users', userId), { userId, phone, password })
+    await setDoc(doc(db, 'users', userId), { fullName, userId, phone, password })
     await deleteDoc(doc(db, 'users', oldUserId))
   } else {
-    await updateDoc(doc(db, 'users', userId), { phone, password })
+    await updateDoc(doc(db, 'users', userId), { fullName, phone, password })
   }
-  return { userId, phone, password }
+  return { fullName, userId, phone, password }
 }
 
 export async function sendChatMessage({ userId, message }) {
@@ -499,9 +500,10 @@ function FoundersSection() {
   )
 }
 
-// --- Auth Component (Login / Register / Forgot Password) ---
+// --- Auth Component ---
 function Auth({ onAuthed }) {
   const [mode, setMode] = useState('login')
+  const [fullName, setFullName] = useState('')
   const [userId, setUserId] = useState('')
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
@@ -518,6 +520,10 @@ function Auth({ onAuthed }) {
 
     try {
       if (mode === 'register') {
+        if (!fullName.trim()) {
+          setLoading(false)
+          return setError('Full name is required.')
+        }
         if (!/^\d{6}$/.test(userId)) {
           setLoading(false)
           return setError('User ID must be exactly 6 digits.')
@@ -531,7 +537,7 @@ function Auth({ onAuthed }) {
           return setError('Password is required.')
         }
 
-        const newUser = await registerUser({ userId, phone, password })
+        const newUser = await registerUser({ fullName, userId, phone, password })
         onAuthed(newUser)
       } else if (mode === 'login') {
         const user = await loginUser({ userId, password })
@@ -570,6 +576,19 @@ function Auth({ onAuthed }) {
       {success && <div className="success-msg">{success}</div>}
 
       <form onSubmit={handleSubmit}>
+        {mode === 'register' && (
+          <div className="field">
+            <label>Full Name</label>
+            <input
+              type="text"
+              placeholder="e.g. John Doe"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              required
+            />
+          </div>
+        )}
+
         <div className="field">
           <label>6-Digit User ID</label>
           <input
@@ -921,9 +940,9 @@ function MachinesTab({
   )
 }
 
-// --- History Tab Component (Filtered strictly to current user only, with month/week filtering) ---
+// --- History Tab Component ---
 function HistoryTab({ history, currentUserId, onDelete }) {
-  const [filterType, setFilterType] = useState('all') // 'all' | 'month' | 'week'
+  const [filterType, setFilterType] = useState('all')
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -1042,8 +1061,8 @@ function HistoryTab({ history, currentUserId, onDelete }) {
   )
 }
 
-// --- Feedback Tab Component (Rating out of 5 stars + message) ---
-function FeedbackTab({ currentUserId, onSubmit }) {
+// --- Feedback Tab Component ---
+function FeedbackTab({ currentUser, onSubmit }) {
   const [msg, setMsg] = useState('')
   const [rating, setRating] = useState(5)
   const [hoverRating, setHoverRating] = useState(0)
@@ -1052,7 +1071,7 @@ function FeedbackTab({ currentUserId, onSubmit }) {
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!msg.trim()) return
-    onSubmit(msg, rating)
+    onSubmit(currentUser.userId, currentUser.fullName, msg, rating)
     setMsg('')
     setRating(5)
     setSubmitted(true)
@@ -1108,6 +1127,7 @@ function FeedbackTab({ currentUserId, onSubmit }) {
 
 // --- Profile Tab Component ---
 function ProfileTab({ currentUser, onUpdate }) {
+  const [fullName, setFullName] = useState(currentUser.fullName || '')
   const [userId, setUserId] = useState(currentUser.userId)
   const [phone, setPhone] = useState(currentUser.phone)
   const [password, setPassword] = useState(currentUser.password)
@@ -1118,7 +1138,7 @@ function ProfileTab({ currentUser, onUpdate }) {
     e.preventDefault()
     setError('')
     try {
-      const updated = await updateProfile(currentUser.userId, { userId, phone, password })
+      const updated = await updateProfile(currentUser.userId, { fullName, userId, phone, password })
       onUpdate(updated)
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
@@ -1133,6 +1153,15 @@ function ProfileTab({ currentUser, onUpdate }) {
       {saved && <div className="success-msg">Profile updated successfully!</div>}
       {error && <div className="error-msg">{error}</div>}
       <form onSubmit={handleSubmit}>
+        <div className="field">
+          <label>Full Name</label>
+          <input
+            type="text"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            required
+          />
+        </div>
         <div className="field">
           <label>6-Digit User ID</label>
           <input
@@ -1170,7 +1199,7 @@ function ProfileTab({ currentUser, onUpdate }) {
 }
 
 // --- Admin Page Component ---
-function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit }) {
+function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDeleteFeedback, onExit }) {
   const [adminPass, setAdminPass] = useState('')
   const [authed, setAuthed] = useState(false)
   const [error, setError] = useState('')
@@ -1180,6 +1209,22 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   })
   const [exportWeek, setExportWeek] = useState(() => {
+    const now = new Date()
+    const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()))
+    const dayNum = d.getUTCDay() || 7
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+    const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+    return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
+  })
+
+  // Feedback filter states
+  const [feedbackFilterType, setFeedbackFilterType] = useState('all') // 'all' | 'month' | 'week'
+  const [feedbackMonth, setFeedbackMonth] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  })
+  const [feedbackWeek, setFeedbackWeek] = useState(() => {
     const now = new Date()
     const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()))
     const dayNum = d.getUTCDay() || 7
@@ -1247,6 +1292,26 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
       alert('Failed to export CSV data.')
     }
   }
+
+  // Filter feedback comments
+  const filteredFeedback = feedback.filter((f) => {
+    if (!f.timestamp) return false
+    const date = new Date(f.timestamp)
+    if (feedbackFilterType === 'month') {
+      const mStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+      return mStr === feedbackMonth
+    }
+    if (feedbackFilterType === 'week') {
+      const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+      const dayNum = d.getUTCDay() || 7
+      d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+      const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+      const wStr = `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
+      return wStr === feedbackWeek
+    }
+    return true
+  })
 
   if (!authed) {
     return (
@@ -1383,27 +1448,73 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
         </section>
 
         <section style={{ marginTop: 24 }}>
-          <h3>Private User Feedback & Ratings (Admin Only)</h3>
-          {feedback.length === 0 ? (
-            <p className="empty-text">No feedback received yet.</p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', gap: '12px' }}>
+            <h3>Private User Feedback & Ratings (Admin Only)</h3>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <select
+                value={feedbackFilterType}
+                onChange={(e) => setFeedbackFilterType(e.target.value)}
+                style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+              >
+                <option value="all">All Time</option>
+                <option value="month">Filter by Month</option>
+                <option value="week">Filter by Week</option>
+              </select>
+
+              {feedbackFilterType === 'month' && (
+                <input
+                  type="month"
+                  value={feedbackMonth}
+                  onChange={(e) => setFeedbackMonth(e.target.value)}
+                  style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                />
+              )}
+
+              {feedbackFilterType === 'week' && (
+                <input
+                  type="week"
+                  value={feedbackWeek}
+                  onChange={(e) => setFeedbackWeek(e.target.value)}
+                  style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                />
+              )}
+            </div>
+          </div>
+
+          {filteredFeedback.length === 0 ? (
+            <p className="empty-text">No feedback received for the selected filter criteria.</p>
           ) : (
             <div className="feedback-list">
-              {feedback.map((f) => (
-                <div key={f.id} className="feedback-card">
-                  <div className="fb-header">
-                    <strong>User {f.userId}</strong>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      {f.rating && (
-                        <span style={{ color: '#EAB308', fontWeight: 'bold' }}>
-                          {'★'.repeat(f.rating)}{'☆'.repeat(5 - f.rating)} ({f.rating}/5)
-                        </span>
-                      )}
-                      <span>{formatMYTime(f.timestamp)}</span>
+              {filteredFeedback.map((f) => {
+                const displayName = f.fullName ? `${f.fullName} (ID: ${f.userId})` : `User ${f.userId}`
+                return (
+                  <div key={f.id} className="feedback-card" style={{ position: 'relative' }}>
+                    <div className="fb-header">
+                      <strong>{displayName}</strong>
+                      <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                        {f.rating && (
+                          <span style={{ color: '#EAB308', fontWeight: 'bold' }}>
+                            {'★'.repeat(f.rating)}{'☆'.repeat(5 - f.rating)} ({f.rating}/5)
+                          </span>
+                        )}
+                        <span>{formatMYDate(f.timestamp)} {formatMYTime(f.timestamp)}</span>
+                        <button
+                          className="btn btn-xs btn-danger"
+                          title="Delete feedback"
+                          onClick={() => {
+                            if (window.confirm('Are you sure you want to delete this feedback comment?')) {
+                              onDeleteFeedback(f.id)
+                            }
+                          }}
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
                     </div>
+                    <p style={{ marginTop: '8px' }}>{f.message}</p>
                   </div>
-                  <p>{f.message}</p>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </section>
@@ -1412,7 +1523,7 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onExit 
   )
 }
 
-// --- Chat Widget Component (with manual unsend button) ---
+// --- Chat Widget Component ---
 function ChatWidget({ messages, currentUserId, onSend, onUnsend }) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
@@ -1631,10 +1742,16 @@ export default function App() {
       showToast('Issue reported. Admins have been notified.')
     })
 
-  const handleFeedback = (message, rating) =>
+  const handleFeedback = (userId, fullName, message, rating) =>
     guard(async () => {
-      await submitFeedback({ userId: currentUser.userId, message, rating })
+      await submitFeedback({ userId, fullName, message, rating })
       showToast('Feedback and rating submitted securely to admins!')
+    })
+
+  const handleDeleteFeedback = (feedbackId) =>
+    guard(async () => {
+      await deleteFeedbackRecord(feedbackId)
+      showToast('Feedback record deleted.')
     })
 
   const handleProfileUpdate = async (updatedUser) => {
@@ -1671,6 +1788,7 @@ export default function App() {
         issues={issues}
         onLock={handleAdminLock}
         onResolveIssue={handleAdminResolve}
+        onDeleteFeedback={handleDeleteFeedback}
         onExit={() => setShowAdmin(false)}
       />
     )
@@ -1702,7 +1820,7 @@ export default function App() {
         <Logo size={32} />
         <div className="topbar-user">
           <span className="clock-my">🇲🇾 {formatMYTime(Date.now())} MYT</span>
-          <span className="userchip">👤 User {currentUser.userId}</span>
+          <span className="userchip">👤 {currentUser.fullName || `User ${currentUser.userId}`}</span>
           <button className="btn btn-ghost btn-sm" onClick={() => handleSetUser(null)}>
             Log Out
           </button>
@@ -1755,14 +1873,14 @@ export default function App() {
         )}
         {activeTab === 'history' && <HistoryTab history={history} currentUserId={currentUser.userId} onDelete={handleDeleteHistory} />}
         {activeTab === 'feedback' && (
-          <FeedbackTab currentUserId={currentUser.userId} onSubmit={handleFeedback} />
+          <FeedbackTab currentUser={currentUser} onSubmit={handleFeedback} />
         )}
         {activeTab === 'profile' && <ProfileTab currentUser={currentUser} onUpdate={handleProfileUpdate} />}
       </div>
 
       <ChatWidget messages={chat} currentUserId={currentUser.userId} onSend={handleSendChat} onUnsend={handleUnsendChat} />
 
-      {toast && <div className={`toast ${toast.type}`}>{toast.message}</div>}
+      {toast && <span className={`toast ${toast.type}`}>{toast.message}</span>}
     </div>
   )
 }
