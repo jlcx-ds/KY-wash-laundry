@@ -581,7 +581,7 @@ function Auth({ onAuthed }) {
             <label>Full Name</label>
             <input
               type="text"
-              placeholder="e.g. John Doe"
+              placeholder="e.g. Justin Low Chun Xian"
               value={fullName}
               onChange={(e) => setFullName(e.target.value)}
               required
