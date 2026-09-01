@@ -11,7 +11,6 @@ import {
   onSnapshot,
   query,
   orderBy,
-  serverTimestamp,
   getDocs,
 } from 'firebase/firestore'
 
@@ -184,6 +183,7 @@ export async function cancelMachine({ id, userId }) {
 
   await addDoc(collection(db, 'history'), {
     userId,
+    phone: mData?.startedPhone || 'N/A',
     machineId: id,
     machineLabel: codeLabel,
     action: 'CANCELLED',
@@ -216,6 +216,7 @@ export async function setCollected({ id, userId }) {
 
   await addDoc(collection(db, 'history'), {
     userId,
+    phone: mData?.startedPhone || 'N/A',
     machineId: id,
     machineLabel: codeLabel,
     action: 'COLLECTED',
@@ -224,8 +225,14 @@ export async function setCollected({ id, userId }) {
   })
 }
 
-export async function forceResetMachine({ id }) {
+export async function forceResetMachine({ id, user }) {
   const machineRef = doc(db, 'machines', id)
+  const snap = await getDoc(machineRef)
+  const mData = snap.data()
+
+  const machineDoc = INITIAL_MACHINES.find(m => m.id === id)
+  const codeLabel = machineDoc ? `${machineDoc.type === 'washer' ? 'W' : 'D'}${machineDoc.index}` : id
+
   await updateDoc(machineRef, {
     status: 'idle',
     startedBy: null,
@@ -233,6 +240,17 @@ export async function forceResetMachine({ id }) {
     startedAt: null,
     endsAt: null,
     modeName: null,
+  })
+
+  // Records force empty action into history logs tracking the user who forced it empty
+  await addDoc(collection(db, 'history'), {
+    userId: user.userId,
+    phone: user.phone || 'N/A',
+    machineId: id,
+    machineLabel: codeLabel,
+    action: 'FORCED_EMPTY',
+    mode: mData?.modeName || 'N/A',
+    timestamp: Date.now(),
   })
 }
 
@@ -1199,11 +1217,17 @@ function ProfileTab({ currentUser, onUpdate }) {
 }
 
 // --- Admin Page Component ---
-function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDeleteFeedback, onExit }) {
+function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDeleteFeedback, onDeleteHistory, onExit }) {
   const [adminPass, setAdminPass] = useState('')
   const [authed, setAuthed] = useState(false)
   const [error, setError] = useState('')
-  const [exportType, setExportType] = useState('month')
+  
+  // Toggle state to hide/show the specific day preview table & export options
+  const [showExportSection, setShowExportSection] = useState(true)
+
+  // Export & History Filter States
+  const [exportType, setExportType] = useState('day')
+  const [exportDay, setExportDay] = useState(() => new Date().toISOString().split('T')[0])
   const [exportMonth, setExportMonth] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -1218,8 +1242,12 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
     return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
   })
 
+  // Live History Preview state for the admin panel using realtime subscribeHistory
+  const [allHistoryRecords, setAllHistoryRecords] = useState([])
+  const [previewFilterDay, setPreviewFilterDay] = useState(() => new Date().toISOString().split('T')[0])
+
   // Feedback filter states
-  const [feedbackFilterType, setFeedbackFilterType] = useState('all') // 'all' | 'month' | 'week'
+  const [feedbackFilterType, setFeedbackFilterType] = useState('all') 
   const [feedbackMonth, setFeedbackMonth] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -1234,6 +1262,14 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
     return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
   })
 
+  useEffect(() => {
+    if (!authed) return
+    const unsubscribe = subscribeHistory((list) => {
+      setAllHistoryRecords(list)
+    })
+    return () => unsubscribe()
+  }, [authed])
+
   const handleLogin = (e) => {
     e.preventDefault()
     if (adminPass === 'James123#') {
@@ -1246,13 +1282,13 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
 
   const handleExportCSV = async () => {
     try {
-      const snap = await getDocs(collection(db, 'history'))
-      const allHistory = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
-
-      const filtered = allHistory.filter((h) => {
+      const filtered = allHistoryRecords.filter((h) => {
         if (!h.timestamp) return false
         const date = new Date(h.timestamp)
-        if (exportType === 'month') {
+        if (exportType === 'day') {
+          const dStr = date.toISOString().split('T')[0]
+          return dStr === exportDay
+        } else if (exportType === 'month') {
           const mStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
           return mStr === exportMonth
         } else {
@@ -1283,7 +1319,7 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
       const encodedUri = encodeURI(csvContent)
       const link = document.createElement('a')
       link.setAttribute('href', encodedUri)
-      link.setAttribute('download', `ky_wash_history_${exportType === 'month' ? exportMonth : exportWeek}.csv`)
+      link.setAttribute('download', `ky_wash_history_${exportType === 'day' ? exportDay : exportType === 'month' ? exportMonth : exportWeek}.csv`)
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
@@ -1293,7 +1329,12 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
     }
   }
 
-  // Filter feedback comments
+  const previewFilteredHistory = allHistoryRecords.filter((h) => {
+    if (!h.timestamp) return false
+    const dateStr = new Date(h.timestamp).toISOString().split('T')[0]
+    return dateStr === previewFilterDay
+  })
+
   const filteredFeedback = feedback.filter((f) => {
     if (!f.timestamp) return false
     const date = new Date(f.timestamp)
@@ -1350,38 +1391,118 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
       </div>
 
       <div className="admin-content">
+        {/* SECTION: History Filter & Logs Preview by Specific Day with Hide/Show Dropdown button */}
         <section style={{ background: '#FFF', padding: '16px', borderRadius: '8px', border: '1px solid #E2E8F0', marginBottom: '24px' }}>
-          <h3>📥 Export History Data (CSV)</h3>
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', marginTop: '12px' }}>
-            <select
-              value={exportType}
-              onChange={(e) => setExportType(e.target.value)}
-              style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
-            >
-              <option value="month">Export by Month</option>
-              <option value="week">Export by Week</option>
-            </select>
-
-            {exportType === 'month' ? (
-              <input
-                type="month"
-                value={exportMonth}
-                onChange={(e) => setExportMonth(e.target.value)}
-                style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
-              />
-            ) : (
-              <input
-                type="week"
-                value={exportWeek}
-                onChange={(e) => setExportWeek(e.target.value)}
-                style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
-              />
-            )}
-
-            <button className="btn btn-primary btn-sm" onClick={handleExportCSV}>
-              Download CSV
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setShowExportSection(!showExportSection)}>
+            <div>
+              <h3 style={{ margin: 0 }}>🔍 View & Export User Logs by Specific Day</h3>
+              <p style={{ color: '#64748B', fontSize: '0.85rem', margin: '4px 0 0 0' }}>
+                Inspect or export user activity logs filtered by day, week, or month (including FORCED_EMPTY actions).
+              </p>
+            </div>
+            <button className="btn btn-ghost btn-sm">
+              {showExportSection ? 'Hide ▲' : 'Show ▼'}
             </button>
           </div>
+
+          {showExportSection && (
+            <div style={{ marginTop: '16px', borderTop: '1px solid #E2E8F0', paddingTop: '16px' }}>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '16px' }}>
+                <label style={{ fontWeight: '500', fontSize: '0.9rem' }}>Select Day:</label>
+                <input
+                  type="date"
+                  value={previewFilterDay}
+                  onChange={(e) => setPreviewFilterDay(e.target.value)}
+                  style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                />
+              </div>
+
+              {previewFilteredHistory.length === 0 ? (
+                <p className="empty-text">No activity records found for {previewFilterDay}.</p>
+              ) : (
+                <table className="data-table" style={{ marginBottom: '16px' }}>
+                  <thead>
+                    <tr>
+                      <th>Time (MYT)</th>
+                      <th>User ID</th>
+                      <th>Phone</th>
+                      <th>Machine</th>
+                      <th>Action</th>
+                      <th>Mode</th>
+                      <th style={{ textAlign: 'right' }}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewFilteredHistory.map((h) => (
+                      <tr key={h.id}>
+                        <td>{formatMYTime(h.timestamp)}</td>
+                        <td><strong>{h.userId}</strong></td>
+                        <td>{h.phone || 'N/A'}</td>
+                        <td>{h.machineLabel || h.machineId}</td>
+                        <td><span className={`badge badge-${h.action.toLowerCase()}`}>{h.action}</span></td>
+                        <td>{h.mode || 'N/A'}</td>
+                        <td style={{ textAlign: 'right' }}>
+                          <button
+                            className="btn btn-xs btn-danger"
+                            title="Delete history record"
+                            onClick={() => {
+                              if (window.confirm('Are you sure you want to delete this history record?')) {
+                                onDeleteHistory(h.id)
+                              }
+                            }}
+                          >
+                            🗑️ Delete
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '12px', display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: '500', fontSize: '0.9rem' }}>Export Options:</span>
+                <select
+                  value={exportType}
+                  onChange={(e) => setExportType(e.target.value)}
+                  style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                >
+                  <option value="day">Export Selected Day</option>
+                  <option value="month">Export by Month</option>
+                  <option value="week">Export by Week</option>
+                </select>
+
+                {exportType === 'day' && (
+                  <input
+                    type="date"
+                    value={exportDay}
+                    onChange={(e) => setExportDay(e.target.value)}
+                    style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                  />
+                )}
+                {exportType === 'month' && (
+                  <input
+                    type="month"
+                    value={exportMonth}
+                    onChange={(e) => setExportMonth(e.target.value)}
+                    style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                  />
+                )}
+                {exportType === 'week' && (
+                  <input
+                    type="week"
+                    value={exportWeek}
+                    onChange={(e) => setExportWeek(e.target.value)}
+                    style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                  />
+                )}
+
+                <button className="btn btn-primary btn-sm" onClick={handleExportCSV}>
+                  Download CSV
+                </button>
+              </div>
+            </div>
+          )}
         </section>
 
         <section>
@@ -1716,7 +1837,7 @@ export default function App() {
 
   const handleForceReset = (id) =>
     guard(async () => {
-      await forceResetMachine({ id })
+      await forceResetMachine({ id, user: currentUser })
       showToast('Machine forcibly reset and marked empty.')
     })
 
@@ -1789,6 +1910,7 @@ export default function App() {
         onLock={handleAdminLock}
         onResolveIssue={handleAdminResolve}
         onDeleteFeedback={handleDeleteFeedback}
+        onDeleteHistory={handleDeleteHistory}
         onExit={() => setShowAdmin(false)}
       />
     )
