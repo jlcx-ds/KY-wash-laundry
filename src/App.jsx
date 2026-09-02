@@ -12,6 +12,7 @@ import {
   query,
   orderBy,
   getDocs,
+  where,
 } from 'firebase/firestore'
 
 // Fixed image references using public folder asset paths directly
@@ -31,6 +32,7 @@ const INITIAL_MACHINES = Array.from({ length: 12 }, (_, i) => {
     startedAt: null,
     endsAt: null,
     modeName: null,
+    price: 0,
     isLocked: false,
   }
 })
@@ -137,6 +139,7 @@ export async function startMachine({ id, user, mode, minutes, machines, washerWa
     startedAt: now,
     endsAt,
     modeName: mode.name,
+    price: mode.price,
   })
 
   const codeLabel = machineDocData ? `${machineDocData.type === 'washer' ? 'W' : 'D'}${machineDocData.index}` : id
@@ -148,6 +151,8 @@ export async function startMachine({ id, user, mode, minutes, machines, washerWa
     machineLabel: codeLabel,
     action: 'STARTED',
     mode: mode.name,
+    category: isWasher ? 'washer' : 'dryer',
+    price: mode.price,
     timestamp: now,
   })
 
@@ -172,6 +177,18 @@ export async function cancelMachine({ id, userId }) {
   const machineDoc = INITIAL_MACHINES.find(m => m.id === id)
   const codeLabel = machineDoc ? `${machineDoc.type === 'washer' ? 'W' : 'D'}${machineDoc.index}` : id
 
+  // Immediately remove the corresponding STARTED history record so spending is instantly removed
+  const histQuery = query(
+    collection(db, 'history'),
+    where('userId', '==', userId),
+    where('machineId', '==', id),
+    where('action', '==', 'STARTED')
+  )
+  const histSnap = await getDocs(histQuery)
+  for (const histDoc of histSnap.docs) {
+    await deleteDoc(doc(db, 'history', histDoc.id))
+  }
+
   await updateDoc(machineRef, {
     status: 'idle',
     startedBy: null,
@@ -179,6 +196,7 @@ export async function cancelMachine({ id, userId }) {
     startedAt: null,
     endsAt: null,
     modeName: null,
+    price: 0,
   })
 
   await addDoc(collection(db, 'history'), {
@@ -188,6 +206,8 @@ export async function cancelMachine({ id, userId }) {
     machineLabel: codeLabel,
     action: 'CANCELLED',
     mode: mData?.modeName || 'N/A',
+    category: machineDoc?.type || 'washer',
+    price: 0,
     timestamp: Date.now(),
   })
 }
@@ -212,6 +232,7 @@ export async function setCollected({ id, userId }) {
     startedAt: null,
     endsAt: null,
     modeName: null,
+    price: 0,
   })
 
   await addDoc(collection(db, 'history'), {
@@ -221,6 +242,8 @@ export async function setCollected({ id, userId }) {
     machineLabel: codeLabel,
     action: 'COLLECTED',
     mode: mData?.modeName || 'N/A',
+    category: machineDoc?.type || 'washer',
+    price: 0,
     timestamp: Date.now(),
   })
 }
@@ -240,9 +263,10 @@ export async function forceResetMachine({ id, user }) {
     startedAt: null,
     endsAt: null,
     modeName: null,
+    price: 0,
   })
 
-  // Records force empty action into history logs tracking the user who forced it empty
+  // Maintain spending by keeping the original STARTED record and logging FORCED_EMPTY
   await addDoc(collection(db, 'history'), {
     userId: user.userId,
     phone: user.phone || 'N/A',
@@ -250,12 +274,28 @@ export async function forceResetMachine({ id, user }) {
     machineLabel: codeLabel,
     action: 'FORCED_EMPTY',
     mode: mData?.modeName || 'N/A',
+    category: machineDoc?.type || 'washer',
+    price: 0, 
     timestamp: Date.now(),
   })
 }
 
 export async function deleteHistoryRecord(historyId) {
   await deleteDoc(doc(db, 'history', historyId))
+}
+
+export async function addManualSpendingRecord({ userId, category, price, mode, phone }) {
+  await addDoc(collection(db, 'history'), {
+    userId,
+    phone: phone || 'N/A',
+    machineId: 'manual',
+    machineLabel: 'Manual Add',
+    action: 'MANUAL_ADD',
+    mode: mode || 'Manual Entry',
+    category,
+    price: Number(price) || 0,
+    timestamp: Date.now(),
+  })
 }
 
 export async function reportIssue({ userId, machineId, description }) {
@@ -721,14 +761,16 @@ function MachinesTab({
   const [issueDesc, setIssueDesc] = useState('')
 
   const WASHER_MODES = [
-    { name: 'Normal', minutes: 30 },
-    { name: 'Extra Wash', minutes: 35 },
-    { name: 'Extra Rinse', minutes: 42 },
+    { name: 'Normal (30 minutes)', minutes: 30, price: 5 },
+    { name: 'Extra Wash (35 minutes)', minutes: 35, price: 6 },
+    { name: 'Extra Rinse (42 minutes)', minutes: 42, price: 7 },
   ]
 
   const DRYER_MODES = [
-    { name: 'Normal', minutes: 30 },
-    { name: 'Extra Dry', minutes: 40 },
+    { name: '30 minutes', minutes: 30, price: 5 },
+    { name: '35 minutes', minutes: 35, price: 6 },
+    { name: '40 minutes', minutes: 40, price: 7 },
+    { name: '45 minutes', minutes: 45, price: 8 },
   ]
 
   const userHasActiveWasher = machines.some(m => m.type === 'washer' && m.startedBy === currentUser.userId && m.status === 'running')
@@ -852,7 +894,7 @@ function MachinesTab({
                     className={`btn btn-sm ${isWasher ? 'btn-outline' : 'btn-sun-outline'}`}
                     onClick={() => onStart(m.id, mode)}
                   >
-                    {mode.name} ({mode.minutes}m)
+                    {mode.name}
                   </button>
                 ))}
               </div>
@@ -959,7 +1001,7 @@ function MachinesTab({
 }
 
 // --- History Tab Component ---
-function HistoryTab({ history, currentUserId, onDelete }) {
+function HistoryTab({ history, currentUserId, currentUserPhone, onDelete, onAddManual }) {
   const [filterType, setFilterType] = useState('all')
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date()
@@ -974,6 +1016,12 @@ function HistoryTab({ history, currentUserId, onDelete }) {
     const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
     return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
   })
+
+  // Manual Add Modal State
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [manualCategory, setManualCategory] = useState('washer')
+  const [manualMode, setManualMode] = useState('Normal (30 minutes)')
+  const [manualPrice, setManualPrice] = useState('5')
 
   const myHistory = history.filter((h) => h.userId === currentUserId)
 
@@ -996,8 +1044,107 @@ function HistoryTab({ history, currentUserId, onDelete }) {
     return true
   })
 
+  const totalWasherSpending = filteredHistory
+    .filter((h) => h.category === 'washer' && h.action !== 'CANCELLED')
+    .reduce((acc, curr) => acc + (Number(curr.price) || 0), 0)
+
+  const totalDryerSpending = filteredHistory
+    .filter((h) => h.category === 'dryer' && h.action !== 'CANCELLED')
+    .reduce((acc, curr) => acc + (Number(curr.price) || 0), 0)
+
+  const grandTotalSpending = totalWasherSpending + totalDryerSpending
+
+  const handleManualSubmit = (e) => {
+    e.preventDefault()
+    onAddManual({
+      userId: currentUserId,
+      category: manualCategory,
+      price: manualPrice,
+      mode: manualMode,
+      phone: currentUserPhone,
+    })
+    setShowAddModal(false)
+    setManualPrice('5')
+  }
+
   return (
     <div className="tab-page">
+      <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '12px', padding: '16px', marginBottom: '20px', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '12px' }}>
+          <h4 style={{ margin: 0, color: '#1E293B' }}>💰 Spending Summary</h4>
+          <button className="btn btn-sm btn-primary" onClick={() => setShowAddModal(true)}>
+            ➕ Add Spending Manually
+          </button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+          <div style={{ background: '#EFF6FF', padding: '12px', borderRadius: '8px', border: '1px solid #BFDBFE' }}>
+            <div style={{ fontSize: '0.85rem', color: '#1E40AF', fontWeight: '500' }}>Washer Cycle Spending</div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#1D4ED8', marginTop: '4px' }}>RM {totalWasherSpending.toFixed(2)}</div>
+          </div>
+          <div style={{ background: '#FFFBEB', padding: '12px', borderRadius: '8px', border: '1px solid #FDE68A' }}>
+            <div style={{ fontSize: '0.85rem', color: '#92400E', fontWeight: '500' }}>Dryer Cycle Spending</div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#B45309', marginTop: '4px' }}>RM {totalDryerSpending.toFixed(2)}</div>
+          </div>
+          <div style={{ background: '#F1F5F9', padding: '12px', borderRadius: '8px', border: '1px solid #CBD5E1' }}>
+            <div style={{ fontSize: '0.85rem', color: '#334155', fontWeight: '500' }}>Total Spending</div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#0F172A', marginTop: '4px' }}>RM {grandTotalSpending.toFixed(2)}</div>
+          </div>
+        </div>
+      </div>
+
+      {showAddModal && (
+        <div style={{ background: '#FFF', padding: '16px', border: '1px solid #CBD5E1', borderRadius: '8px', marginBottom: '20px' }}>
+          <h4>Add Manual Spending Entry</h4>
+          <form onSubmit={handleManualSubmit} style={{ display: 'grid', gap: '10px', marginTop: '10px' }}>
+            <div>
+              <label style={{ fontSize: '0.85rem', fontWeight: '500' }}>Category:</label>
+              <select
+                value={manualCategory}
+                onChange={(e) => {
+                  setManualCategory(e.target.value)
+                  if (e.target.value === 'washer') {
+                    setManualMode('Normal (30 minutes)')
+                    setManualPrice('5')
+                  } else {
+                    setManualMode('30 minutes')
+                    setManualPrice('5')
+                  }
+                }}
+                style={{ width: '100%', padding: '6px', borderRadius: '6px', border: '1px solid #CBD5E1', marginTop: '4px' }}
+              >
+                <option value="washer">Washer</option>
+                <option value="dryer">Dryer</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: '0.85rem', fontWeight: '500' }}>Mode / Description:</label>
+              <input
+                type="text"
+                value={manualMode}
+                onChange={(e) => setManualMode(e.target.value)}
+                required
+                style={{ width: '100%', padding: '6px', borderRadius: '6px', border: '1px solid #CBD5E1', marginTop: '4px' }}
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '0.85rem', fontWeight: '500' }}>Price (RM):</label>
+              <input
+                type="number"
+                step="0.01"
+                value={manualPrice}
+                onChange={(e) => setManualPrice(e.target.value)}
+                required
+                style={{ width: '100%', padding: '6px', borderRadius: '6px', border: '1px solid #CBD5E1', marginTop: '4px' }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+              <button type="submit" className="btn btn-sm btn-primary">Save Entry</button>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAddModal(false)}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '12px' }}>
         <h3>My Cycle History</h3>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1039,10 +1186,10 @@ function HistoryTab({ history, currentUserId, onDelete }) {
             <tr>
               <th>Time (MYT)</th>
               <th>Date</th>
-              <th>User ID</th>
               <th>Machine</th>
               <th>Action</th>
               <th>Mode</th>
+              <th>Price</th>
               <th style={{ textAlign: 'right' }}>Action</th>
             </tr>
           </thead>
@@ -1051,18 +1198,18 @@ function HistoryTab({ history, currentUserId, onDelete }) {
               <tr key={h.id} className="highlight-row">
                 <td>{formatMYTime(h.timestamp)}</td>
                 <td>{formatMYDate(h.timestamp)}</td>
-                <td>{h.userId}</td>
                 <td><strong>{h.machineLabel || h.machineId}</strong></td>
                 <td>
                   <span className={`badge badge-${h.action.toLowerCase()}`}>{h.action}</span>
                 </td>
                 <td>{h.mode}</td>
+                <td>{h.price ? `RM ${Number(h.price).toFixed(2)}` : 'RM 0.00'}</td>
                 <td style={{ textAlign: 'right' }}>
                   <button
                     className="btn btn-xs btn-danger"
                     title="Delete history record"
                     onClick={() => {
-                      if (window.confirm('Are you sure you want to delete this history record?')) {
+                      if (window.confirm('Are you sure you want to delete this history record? This will subtract the spending accordingly.')) {
                         onDelete(h.id)
                       }
                     }}
@@ -1222,10 +1369,8 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
   const [authed, setAuthed] = useState(false)
   const [error, setError] = useState('')
   
-  // Toggle state to hide/show the specific day preview table & export options
   const [showExportSection, setShowExportSection] = useState(true)
 
-  // Export & History Filter States
   const [exportType, setExportType] = useState('day')
   const [exportDay, setExportDay] = useState(() => new Date().toISOString().split('T')[0])
   const [exportMonth, setExportMonth] = useState(() => {
@@ -1242,11 +1387,9 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
     return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
   })
 
-  // Live History Preview state for the admin panel using realtime subscribeHistory
   const [allHistoryRecords, setAllHistoryRecords] = useState([])
   const [previewFilterDay, setPreviewFilterDay] = useState(() => new Date().toISOString().split('T')[0])
 
-  // Feedback filter states
   const [feedbackFilterType, setFeedbackFilterType] = useState('all') 
   const [feedbackMonth, setFeedbackMonth] = useState(() => {
     const now = new Date()
@@ -1308,12 +1451,12 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
       }
 
       let csvContent = 'data:text/csv;charset=utf-8,'
-      csvContent += 'ID,Timestamp,Date,Time (MYT),User ID,Phone,Machine,Action,Mode\n'
+      csvContent += 'ID,Timestamp,Date,Time (MYT),User ID,Phone,Machine,Action,Mode,Price\n'
 
       filtered.forEach((row) => {
         const dateStr = formatMYDate(row.timestamp)
         const timeStr = formatMYTime(row.timestamp)
-        csvContent += `"${row.id}","${row.timestamp}","${dateStr}","${timeStr}","${row.userId}","${row.phone || 'N/A'}","${row.machineLabel || row.machineId}","${row.action}","${row.mode || 'N/A'}"\n`
+        csvContent += `"${row.id}","${row.timestamp}","${dateStr}","${timeStr}","${row.userId}","${row.phone || 'N/A'}","${row.machineLabel || row.machineId}","${row.action}","${row.mode || 'N/A'}","${row.price || 0}"\n`
       })
 
       const encodedUri = encodeURI(csvContent)
@@ -1391,7 +1534,6 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
       </div>
 
       <div className="admin-content">
-        {/* SECTION: History Filter & Logs Preview by Specific Day with Hide/Show Dropdown button */}
         <section style={{ background: '#FFF', padding: '16px', borderRadius: '8px', border: '1px solid #E2E8F0', marginBottom: '24px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setShowExportSection(!showExportSection)}>
             <div>
@@ -1429,6 +1571,7 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
                       <th>Machine</th>
                       <th>Action</th>
                       <th>Mode</th>
+                      <th>Price</th>
                       <th style={{ textAlign: 'right' }}>Action</th>
                     </tr>
                   </thead>
@@ -1441,6 +1584,7 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
                         <td>{h.machineLabel || h.machineId}</td>
                         <td><span className={`badge badge-${h.action.toLowerCase()}`}>{h.action}</span></td>
                         <td>{h.mode || 'N/A'}</td>
+                        <td>{h.price ? `RM ${Number(h.price).toFixed(2)}` : 'RM 0.00'}</td>
                         <td style={{ textAlign: 'right' }}>
                           <button
                             className="btn btn-xs btn-danger"
@@ -1847,6 +1991,12 @@ export default function App() {
       showToast('History record deleted.')
     })
 
+  const handleAddManualSpending = (data) =>
+    guard(async () => {
+      await addManualSpendingRecord(data)
+      showToast('Manual spending entry added successfully.')
+    })
+
   const handleJoinWaitlist = (type) =>
     guard(async () => {
       await joinWaitlist({ type, userId: currentUser.userId })
@@ -1993,7 +2143,15 @@ export default function App() {
             onReportIssue={handleReportIssue}
           />
         )}
-        {activeTab === 'history' && <HistoryTab history={history} currentUserId={currentUser.userId} onDelete={handleDeleteHistory} />}
+        {activeTab === 'history' && (
+          <HistoryTab
+            history={history}
+            currentUserId={currentUser.userId}
+            currentUserPhone={currentUser.phone}
+            onDelete={handleDeleteHistory}
+            onAddManual={handleAddManualSpending}
+          />
+        )}
         {activeTab === 'feedback' && (
           <FeedbackTab currentUser={currentUser} onSubmit={handleFeedback} />
         )}
