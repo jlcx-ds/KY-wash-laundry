@@ -37,13 +37,9 @@ const INITIAL_MACHINES = Array.from({ length: 12 }, (_, i) => {
   }
 })
 
-// --- Helper for Resolving Past Prices ---
-function getResolvedPrice(record) {
-  // Only CANCELLED actions should not add to total spending
-  if (record.action === 'CANCELLED') {
-    return 0
-  }
-  if (record.price !== undefined && record.price !== null && Number(record.price) > 0) {
+// --- Helpers for Pricing & Correct Calculation Logic ---
+function getBasePrice(record) {
+  if (record.price !== undefined && record.price !== null && Number(record.price) >= 0) {
     return Number(record.price)
   }
   const modeStr = (record.mode || '').toLowerCase()
@@ -59,6 +55,32 @@ function getResolvedPrice(record) {
     if (modeStr.includes('35')) return 6
     return 5
   }
+}
+
+function getDisplayPrice(record, allHistory = []) {
+  // Resolution and non-charging actions always display RM0.00
+  if (['CANCELLED', 'COLLECTED', 'FORCED_EMPTY', 'FORCED_EMPTY_BY'].includes(record.action)) {
+    return 0
+  }
+  
+  // If this is a STARTED record that was subsequently cancelled, show 0
+  if (record.action === 'STARTED') {
+    const cancelled = allHistory.find(h =>
+      h.userId === record.userId &&
+      h.machineId === record.machineId &&
+      h.timestamp > record.timestamp &&
+      h.action === 'CANCELLED'
+    )
+    if (cancelled) {
+      return 0
+    }
+  }
+
+  return getBasePrice(record)
+}
+
+function getResolvedPrice(record, allHistory = []) {
+  return getDisplayPrice(record, allHistory)
 }
 
 // --- Real-time Firebase Subscriptions & Actions ---
@@ -201,18 +223,6 @@ export async function cancelMachine({ id, userId }) {
   const machineDoc = INITIAL_MACHINES.find(m => m.id === id)
   const codeLabel = machineDoc ? `${machineDoc.type === 'washer' ? 'W' : 'D'}${machineDoc.index}` : id
 
-  // Immediately remove the corresponding STARTED history record so spending is instantly removed
-  const histQuery = query(
-    collection(db, 'history'),
-    where('userId', '==', userId),
-    where('machineId', '==', id),
-    where('action', '==', 'STARTED')
-  )
-  const histSnap = await getDocs(histQuery)
-  for (const histDoc of histSnap.docs) {
-    await deleteDoc(doc(db, 'history', histDoc.id))
-  }
-
   await updateDoc(machineRef, {
     status: 'idle',
     startedBy: null,
@@ -267,7 +277,7 @@ export async function setCollected({ id, userId }) {
     action: 'COLLECTED',
     mode: mData?.modeName || 'N/A',
     category: machineDoc?.type || 'washer',
-    price: mData?.price || 0,
+    price: 0,
     timestamp: Date.now(),
   })
 }
@@ -280,11 +290,11 @@ export async function forceResetMachine({ id, user }) {
   const machineDoc = INITIAL_MACHINES.find(m => m.id === id)
   const codeLabel = machineDoc ? `${machineDoc.type === 'washer' ? 'W' : 'D'}${machineDoc.index}` : id
 
-  const targetUserId = mData?.startedBy || user.userId
-  const targetPhone = mData?.startedPhone || 'N/A'
-  const cyclePrice = mData?.price || 0
+  const ownerUserId = mData?.startedBy
+  const ownerPhone = mData?.startedPhone || 'N/A'
   const cycleMode = mData?.modeName || 'N/A'
   const cycleCategory = machineDoc?.type || 'washer'
+  const timestampNow = Date.now()
 
   await updateDoc(machineRef, {
     status: 'idle',
@@ -296,17 +306,35 @@ export async function forceResetMachine({ id, user }) {
     price: 0,
   })
 
-  await addDoc(collection(db, 'history'), {
-    userId: targetUserId,
-    phone: targetPhone,
-    machineId: id,
-    machineLabel: codeLabel,
-    action: 'FORCED_EMPTY',
-    mode: cycleMode,
-    category: cycleCategory,
-    price: cyclePrice, 
-    timestamp: Date.now(),
-  })
+  // 1. Assign FORCED_EMPTY to the original machine owner (price: 0 since STARTED already covers it)
+  if (ownerUserId) {
+    await addDoc(collection(db, 'history'), {
+      userId: ownerUserId,
+      phone: ownerPhone,
+      machineId: id,
+      machineLabel: codeLabel,
+      action: 'FORCED_EMPTY',
+      mode: cycleMode,
+      category: cycleCategory,
+      price: 0, 
+      timestamp: timestampNow,
+    })
+  }
+
+  // 2. Assign FORCED_EMPTY_BY to the user who performed the action (zero spending)
+  if (user && user.userId) {
+    await addDoc(collection(db, 'history'), {
+      userId: user.userId,
+      phone: user.phone || 'N/A',
+      machineId: id,
+      machineLabel: codeLabel,
+      action: 'FORCED_EMPTY_BY',
+      mode: cycleMode,
+      category: cycleCategory,
+      price: 0, 
+      timestamp: timestampNow,
+    })
+  }
 }
 
 export async function deleteHistoryRecord(historyId) {
@@ -1074,12 +1102,12 @@ function HistoryTab({ history, currentUserId, currentUserPhone, onDelete, onAddM
   })
 
   const totalWasherSpending = filteredHistory
-    .filter((h) => (h.category === 'washer' || (h.machineLabel && h.machineLabel.startsWith('W'))) && h.action !== 'CANCELLED')
-    .reduce((acc, curr) => acc + getResolvedPrice(curr), 0)
+    .filter((h) => (h.category === 'washer' || (h.machineLabel && h.machineLabel.startsWith('W'))))
+    .reduce((acc, curr) => acc + getResolvedPrice(curr, filteredHistory), 0)
 
   const totalDryerSpending = filteredHistory
-    .filter((h) => (h.category === 'dryer' || (h.machineLabel && h.machineLabel.startsWith('D'))) && h.action !== 'CANCELLED')
-    .reduce((acc, curr) => acc + getResolvedPrice(curr), 0)
+    .filter((h) => (h.category === 'dryer' || (h.machineLabel && h.machineLabel.startsWith('D'))))
+    .reduce((acc, curr) => acc + getResolvedPrice(curr, filteredHistory), 0)
 
   const grandTotalSpending = totalWasherSpending + totalDryerSpending
 
@@ -1227,7 +1255,7 @@ function HistoryTab({ history, currentUserId, currentUserPhone, onDelete, onAddM
           </thead>
           <tbody>
             {filteredHistory.map((h) => {
-              const displayPrice = getResolvedPrice(h)
+              const displayPrice = getDisplayPrice(h, filteredHistory)
               return (
                 <tr key={h.id} className="highlight-row">
                   <td>{formatMYTime(h.timestamp)}</td>
@@ -1491,7 +1519,7 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
       filtered.forEach((row) => {
         const dateStr = formatMYDate(row.timestamp)
         const timeStr = formatMYTime(row.timestamp)
-        const exportPrice = getResolvedPrice(row)
+        const exportPrice = getDisplayPrice(row, filtered)
         csvContent += `"${row.id}","${row.timestamp}","${dateStr}","${timeStr}","${row.userId}","${row.phone || 'N/A'}","${row.machineLabel || row.machineId}","${row.action}","${row.mode || 'N/A'}","${exportPrice}"\n`
       })
 
@@ -1613,7 +1641,7 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
                   </thead>
                   <tbody>
                     {previewFilteredHistory.map((h) => {
-                      const rowPrice = getResolvedPrice(h)
+                      const rowPrice = getDisplayPrice(h, allHistoryRecords)
                       return (
                         <tr key={h.id}>
                           <td>{formatMYTime(h.timestamp)}</td>
