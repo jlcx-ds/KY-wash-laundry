@@ -37,6 +37,30 @@ const INITIAL_MACHINES = Array.from({ length: 12 }, (_, i) => {
   }
 })
 
+// --- Helper for Resolving Past Prices ---
+function getResolvedPrice(record) {
+  // Only CANCELLED actions should not add to total spending
+  if (record.action === 'CANCELLED') {
+    return 0
+  }
+  if (record.price !== undefined && record.price !== null && Number(record.price) > 0) {
+    return Number(record.price)
+  }
+  const modeStr = (record.mode || '').toLowerCase()
+  const catStr = (record.category || '').toLowerCase()
+
+  if (catStr === 'washer' || modeStr.includes('wash') || (record.machineLabel && record.machineLabel.startsWith('W'))) {
+    if (modeStr.includes('extra rinse') || modeStr.includes('42')) return 7
+    if (modeStr.includes('extra wash') || modeStr.includes('35')) return 6
+    return 5
+  } else {
+    if (modeStr.includes('45')) return 8
+    if (modeStr.includes('40')) return 7
+    if (modeStr.includes('35')) return 6
+    return 5
+  }
+}
+
 // --- Real-time Firebase Subscriptions & Actions ---
 
 export async function ensureMachinesSeeded() {
@@ -243,7 +267,7 @@ export async function setCollected({ id, userId }) {
     action: 'COLLECTED',
     mode: mData?.modeName || 'N/A',
     category: machineDoc?.type || 'washer',
-    price: 0,
+    price: mData?.price || 0,
     timestamp: Date.now(),
   })
 }
@@ -256,6 +280,12 @@ export async function forceResetMachine({ id, user }) {
   const machineDoc = INITIAL_MACHINES.find(m => m.id === id)
   const codeLabel = machineDoc ? `${machineDoc.type === 'washer' ? 'W' : 'D'}${machineDoc.index}` : id
 
+  const targetUserId = mData?.startedBy || user.userId
+  const targetPhone = mData?.startedPhone || 'N/A'
+  const cyclePrice = mData?.price || 0
+  const cycleMode = mData?.modeName || 'N/A'
+  const cycleCategory = machineDoc?.type || 'washer'
+
   await updateDoc(machineRef, {
     status: 'idle',
     startedBy: null,
@@ -266,16 +296,15 @@ export async function forceResetMachine({ id, user }) {
     price: 0,
   })
 
-  // Maintain spending by keeping the original STARTED record and logging FORCED_EMPTY
   await addDoc(collection(db, 'history'), {
-    userId: user.userId,
-    phone: user.phone || 'N/A',
+    userId: targetUserId,
+    phone: targetPhone,
     machineId: id,
     machineLabel: codeLabel,
     action: 'FORCED_EMPTY',
-    mode: mData?.modeName || 'N/A',
-    category: machineDoc?.type || 'washer',
-    price: 0, 
+    mode: cycleMode,
+    category: cycleCategory,
+    price: cyclePrice, 
     timestamp: Date.now(),
   })
 }
@@ -1045,12 +1074,12 @@ function HistoryTab({ history, currentUserId, currentUserPhone, onDelete, onAddM
   })
 
   const totalWasherSpending = filteredHistory
-    .filter((h) => h.category === 'washer' && h.action !== 'CANCELLED')
-    .reduce((acc, curr) => acc + (Number(curr.price) || 0), 0)
+    .filter((h) => (h.category === 'washer' || (h.machineLabel && h.machineLabel.startsWith('W'))) && h.action !== 'CANCELLED')
+    .reduce((acc, curr) => acc + getResolvedPrice(curr), 0)
 
   const totalDryerSpending = filteredHistory
-    .filter((h) => h.category === 'dryer' && h.action !== 'CANCELLED')
-    .reduce((acc, curr) => acc + (Number(curr.price) || 0), 0)
+    .filter((h) => (h.category === 'dryer' || (h.machineLabel && h.machineLabel.startsWith('D'))) && h.action !== 'CANCELLED')
+    .reduce((acc, curr) => acc + getResolvedPrice(curr), 0)
 
   const grandTotalSpending = totalWasherSpending + totalDryerSpending
 
@@ -1069,20 +1098,52 @@ function HistoryTab({ history, currentUserId, currentUserPhone, onDelete, onAddM
 
   return (
     <div className="tab-page">
+      {/* Spending Summary Section with Integrated Date Filters */}
       <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '12px', padding: '16px', marginBottom: '20px', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '12px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
           <h4 style={{ margin: 0, color: '#1E293B' }}>💰 Spending Summary</h4>
-          <button className="btn btn-sm btn-primary" onClick={() => setShowAddModal(true)}>
-            ➕ Add Spending Manually
-          </button>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <select
+              value={filterType}
+              onChange={(e) => setFilterType(e.target.value)}
+              style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF', fontSize: '0.85rem' }}
+            >
+              <option value="all">All Time</option>
+              <option value="month">Filter by Month</option>
+              <option value="week">Filter by Week</option>
+            </select>
+
+            {filterType === 'month' && (
+              <input
+                type="month"
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                style={{ padding: '4px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF', fontSize: '0.85rem' }}
+              />
+            )}
+
+            {filterType === 'week' && (
+              <input
+                type="week"
+                value={selectedWeek}
+                onChange={(e) => setSelectedWeek(e.target.value)}
+                style={{ padding: '4px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF', fontSize: '0.85rem' }}
+              />
+            )}
+
+            <button className="btn btn-sm btn-primary" onClick={() => setShowAddModal(true)}>
+              ➕ Add Manual
+            </button>
+          </div>
         </div>
+
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
           <div style={{ background: '#EFF6FF', padding: '12px', borderRadius: '8px', border: '1px solid #BFDBFE' }}>
-            <div style={{ fontSize: '0.85rem', color: '#1E40AF', fontWeight: '500' }}>Washer Cycle Spending</div>
+            <div style={{ fontSize: '0.85rem', color: '#1E40AF', fontWeight: '500' }}>Washer Spending</div>
             <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#1D4ED8', marginTop: '4px' }}>RM {totalWasherSpending.toFixed(2)}</div>
           </div>
           <div style={{ background: '#FFFBEB', padding: '12px', borderRadius: '8px', border: '1px solid #FDE68A' }}>
-            <div style={{ fontSize: '0.85rem', color: '#92400E', fontWeight: '500' }}>Dryer Cycle Spending</div>
+            <div style={{ fontSize: '0.85rem', color: '#92400E', fontWeight: '500' }}>Dryer Spending</div>
             <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#B45309', marginTop: '4px' }}>RM {totalDryerSpending.toFixed(2)}</div>
           </div>
           <div style={{ background: '#F1F5F9', padding: '12px', borderRadius: '8px', border: '1px solid #CBD5E1' }}>
@@ -1147,35 +1208,6 @@ function HistoryTab({ history, currentUserId, currentUserPhone, onDelete, onAddM
 
       <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '12px' }}>
         <h3>My Cycle History</h3>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-          <select
-            value={filterType}
-            onChange={(e) => setFilterType(e.target.value)}
-            style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
-          >
-            <option value="all">All Time</option>
-            <option value="month">Filter by Month</option>
-            <option value="week">Filter by Week</option>
-          </select>
-
-          {filterType === 'month' && (
-            <input
-              type="month"
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
-            />
-          )}
-
-          {filterType === 'week' && (
-            <input
-              type="week"
-              value={selectedWeek}
-              onChange={(e) => setSelectedWeek(e.target.value)}
-              style={{ padding: '5px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
-            />
-          )}
-        </div>
       </div>
 
       {filteredHistory.length === 0 ? (
@@ -1194,31 +1226,34 @@ function HistoryTab({ history, currentUserId, currentUserPhone, onDelete, onAddM
             </tr>
           </thead>
           <tbody>
-            {filteredHistory.map((h) => (
-              <tr key={h.id} className="highlight-row">
-                <td>{formatMYTime(h.timestamp)}</td>
-                <td>{formatMYDate(h.timestamp)}</td>
-                <td><strong>{h.machineLabel || h.machineId}</strong></td>
-                <td>
-                  <span className={`badge badge-${h.action.toLowerCase()}`}>{h.action}</span>
-                </td>
-                <td>{h.mode}</td>
-                <td>{h.price ? `RM ${Number(h.price).toFixed(2)}` : 'RM 0.00'}</td>
-                <td style={{ textAlign: 'right' }}>
-                  <button
-                    className="btn btn-xs btn-danger"
-                    title="Delete history record"
-                    onClick={() => {
-                      if (window.confirm('Are you sure you want to delete this history record? This will subtract the spending accordingly.')) {
-                        onDelete(h.id)
-                      }
-                    }}
-                  >
-                    🗑️ Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {filteredHistory.map((h) => {
+              const displayPrice = getResolvedPrice(h)
+              return (
+                <tr key={h.id} className="highlight-row">
+                  <td>{formatMYTime(h.timestamp)}</td>
+                  <td>{formatMYDate(h.timestamp)}</td>
+                  <td><strong>{h.machineLabel || h.machineId}</strong></td>
+                  <td>
+                    <span className={`badge badge-${h.action.toLowerCase()}`}>{h.action}</span>
+                  </td>
+                  <td>{h.mode}</td>
+                  <td>RM {displayPrice.toFixed(2)}</td>
+                  <td style={{ textAlign: 'right' }}>
+                    <button
+                      className="btn btn-xs btn-danger"
+                      title="Delete history record"
+                      onClick={() => {
+                        if (window.confirm('Are you sure you want to delete this history record? This will subtract the spending accordingly.')) {
+                          onDelete(h.id)
+                        }
+                      }}
+                    >
+                      🗑️ Delete
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       )}
@@ -1456,7 +1491,8 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
       filtered.forEach((row) => {
         const dateStr = formatMYDate(row.timestamp)
         const timeStr = formatMYTime(row.timestamp)
-        csvContent += `"${row.id}","${row.timestamp}","${dateStr}","${timeStr}","${row.userId}","${row.phone || 'N/A'}","${row.machineLabel || row.machineId}","${row.action}","${row.mode || 'N/A'}","${row.price || 0}"\n`
+        const exportPrice = getResolvedPrice(row)
+        csvContent += `"${row.id}","${row.timestamp}","${dateStr}","${timeStr}","${row.userId}","${row.phone || 'N/A'}","${row.machineLabel || row.machineId}","${row.action}","${row.mode || 'N/A'}","${exportPrice}"\n`
       })
 
       const encodedUri = encodeURI(csvContent)
@@ -1576,30 +1612,33 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
                     </tr>
                   </thead>
                   <tbody>
-                    {previewFilteredHistory.map((h) => (
-                      <tr key={h.id}>
-                        <td>{formatMYTime(h.timestamp)}</td>
-                        <td><strong>{h.userId}</strong></td>
-                        <td>{h.phone || 'N/A'}</td>
-                        <td>{h.machineLabel || h.machineId}</td>
-                        <td><span className={`badge badge-${h.action.toLowerCase()}`}>{h.action}</span></td>
-                        <td>{h.mode || 'N/A'}</td>
-                        <td>{h.price ? `RM ${Number(h.price).toFixed(2)}` : 'RM 0.00'}</td>
-                        <td style={{ textAlign: 'right' }}>
-                          <button
-                            className="btn btn-xs btn-danger"
-                            title="Delete history record"
-                            onClick={() => {
-                              if (window.confirm('Are you sure you want to delete this history record?')) {
-                                onDeleteHistory(h.id)
-                              }
-                            }}
-                          >
-                            🗑️ Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {previewFilteredHistory.map((h) => {
+                      const rowPrice = getResolvedPrice(h)
+                      return (
+                        <tr key={h.id}>
+                          <td>{formatMYTime(h.timestamp)}</td>
+                          <td><strong>{h.userId}</strong></td>
+                          <td>{h.phone || 'N/A'}</td>
+                          <td>{h.machineLabel || h.machineId}</td>
+                          <td><span className={`badge badge-${h.action.toLowerCase()}`}>{h.action}</span></td>
+                          <td>{h.mode || 'N/A'}</td>
+                          <td>RM {rowPrice.toFixed(2)}</td>
+                          <td style={{ textAlign: 'right' }}>
+                            <button
+                              className="btn btn-xs btn-danger"
+                              title="Delete history record"
+                              onClick={() => {
+                                if (window.confirm('Are you sure you want to delete this history record?')) {
+                                  onDeleteHistory(h.id)
+                                }
+                              }}
+                            >
+                              🗑️ Delete
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               )}
