@@ -306,7 +306,6 @@ export async function forceResetMachine({ id, user }) {
     price: 0,
   })
 
-  // 1. Assign FORCED_EMPTY to the original machine owner (price: 0 since STARTED already covers it)
   if (ownerUserId) {
     await addDoc(collection(db, 'history'), {
       userId: ownerUserId,
@@ -321,7 +320,6 @@ export async function forceResetMachine({ id, user }) {
     })
   }
 
-  // 2. Assign FORCED_EMPTY_BY to the user who performed the action (zero spending)
   if (user && user.userId) {
     await addDoc(collection(db, 'history'), {
       userId: user.userId,
@@ -908,6 +906,24 @@ function MachinesTab({
       background: isWasher ? '#F8FAFC' : '#FFFBEB',
     }
 
+    // Correct pay link mappings based on user specification
+    let payLink = ''
+    if (isWasher) {
+      if (m.index === 1) payLink = 'https://www.eqlinker.com/static/applet/eqlinker?sn=NYJ312007A100131079'
+      if (m.index === 2) payLink = 'https://www.eqlinker.com/static/applet/eqlinker?sn=NYJ312007A100131064'
+      if (m.index === 3) payLink = 'https://www.eqlinker.com/static/applet/eqlinker?sn=NYJ312007A100131070'
+      if (m.index === 4) payLink = 'https://www.eqlinker.com/static/applet/eqlinker?sn=NYJ312007A100132219'
+      if (m.index === 5) payLink = 'https://www.eqlinker.com/static/applet/eqlinker?sn=NYJ312007A100132455'
+      if (m.index === 6) payLink = 'https://singapore.anlun.vip/pages/tenant/eqlink_g/pages/list_cw/list_cw?sn=NYJ312007A100160381'
+    } else {
+      if (m.index === 1) payLink = 'https://www.eqlinker.com/static/applet/eqlinker?sn=NYJ312007A100131068'
+      if (m.index === 2) payLink = 'https://www.eqlinker.com/static/applet/eqlinker?sn=NYJ312007A100131069'
+      if (m.index === 3) payLink = 'https://www.eqlinker.com/static/applet/eqlinker?sn=NYJ312007A100131067'
+      if (m.index === 4) payLink = 'https://www.eqlinker.com/static/applet/eqlinker?sn=NYJ312007A100132304'
+      if (m.index === 5) payLink = 'https://www.eqlinker.com/static/applet/eqlinker?sn=NYJ312007A100132452'
+      if (m.index === 6) payLink = 'https://singapore.anlun.vip/pages/tenant/eqlink_g/pages/list_cw/list_cw?sn=NYJ312007A100160397'
+    }
+
     return (
       <div key={m.id} className={`machine-card ${statusClass}`} style={cardThemeStyle}>
         <div className="machine-header">
@@ -1007,13 +1023,26 @@ function MachinesTab({
               </button>
             )}
 
-            <button
-              className="btn btn-ghost btn-xs"
-              style={{ marginTop: 6 }}
-              onClick={() => setReportingId(m.id)}
-            >
-              ⚠️ Report Issue
-            </button>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+              <button
+                className="btn btn-ghost btn-xs"
+                onClick={() => setReportingId(m.id)}
+              >
+                ⚠️ Report Issue
+              </button>
+
+              {payLink && (
+                <a
+                  href={payLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-xs"
+                  style={{ textDecoration: 'none', background: '#16A34A', color: '#FFF', borderColor: '#16A34A', padding: '2px 8px', fontSize: '0.75rem' }}
+                >
+                  💳 Pay Now
+                </a>
+              )}
+            </div>
           </div>
 
           {reportingId === m.id && (
@@ -1074,7 +1103,6 @@ function HistoryTab({ history, currentUserId, currentUserPhone, onDelete, onAddM
     return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
   })
 
-  // Manual Add Modal State
   const [showAddModal, setShowAddModal] = useState(false)
   const [manualCategory, setManualCategory] = useState('washer')
   const [manualMode, setManualMode] = useState('Normal (30 minutes)')
@@ -1126,7 +1154,6 @@ function HistoryTab({ history, currentUserId, currentUserPhone, onDelete, onAddM
 
   return (
     <div className="tab-page">
-      {/* Spending Summary Section with Integrated Date Filters */}
       <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '12px', padding: '16px', marginBottom: '20px', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
           <h4 style={{ margin: 0, color: '#1E293B' }}>💰 Spending Summary</h4>
@@ -1434,6 +1461,25 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
   
   const [showExportSection, setShowExportSection] = useState(true)
 
+  // Admin Dashboard State
+  const [showDashboard, setShowDashboard] = useState(true)
+  const [dashFilterType, setDashFilterType] = useState('all') // 'date' | 'week' | 'month' | 'year' | 'all'
+  const [dashDate, setDashDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [dashWeek, setDashWeek] = useState(() => {
+    const now = new Date()
+    const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()))
+    const dayNum = d.getUTCDay() || 7
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+    const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+    return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
+  })
+  const [dashMonth, setDashMonth] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  })
+  const [dashYear, setDashYear] = useState(() => String(new Date().getFullYear()))
+
   const [exportType, setExportType] = useState('day')
   const [exportDay, setExportDay] = useState(() => new Date().toISOString().split('T')[0])
   const [exportMonth, setExportMonth] = useState(() => {
@@ -1468,12 +1514,22 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
     return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
   })
 
+  // New admin state for waiting lists and community chat
+  const [washerWaitlist, setWasherWaitlist] = useState([])
+  const [dryerWaitlist, setDryerWaitlist] = useState([])
+  const [chatMessages, setChatMessages] = useState([])
+
   useEffect(() => {
     if (!authed) return
-    const unsubscribe = subscribeHistory((list) => {
-      setAllHistoryRecords(list)
-    })
-    return () => unsubscribe()
+    const unsubs = [
+      subscribeHistory((list) => {
+        setAllHistoryRecords(list)
+      }),
+      subscribeWaitlist('washer', setWasherWaitlist),
+      subscribeWaitlist('dryer', setDryerWaitlist),
+      subscribeChat(setChatMessages),
+    ]
+    return () => unsubs.forEach((u) => u())
   }, [authed])
 
   const handleLogin = (e) => {
@@ -1542,6 +1598,33 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
     return dateStr === previewFilterDay
   })
 
+  // Dashboard metrics calculation based on filters
+  const filteredDashRecords = allHistoryRecords.filter((h) => {
+    if (!h.timestamp) return false
+    const date = new Date(h.timestamp)
+    if (dashFilterType === 'date') {
+      return date.toISOString().split('T')[0] === dashDate
+    } else if (dashFilterType === 'week') {
+      const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+      const dayNum = d.getUTCDay() || 7
+      d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+      const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+      const wStr = `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
+      return wStr === dashWeek
+    } else if (dashFilterType === 'month') {
+      const mStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+      return mStr === dashMonth
+    } else if (dashFilterType === 'year') {
+      return String(date.getFullYear()) === dashYear
+    }
+    return true
+  })
+
+  const totalCompletedCycles = filteredDashRecords.filter(h => h.action === 'COLLECTED').length
+  const totalInProgressCycles = machines.filter(m => m.status === 'running').length
+  const totalCancelledCycles = filteredDashRecords.filter(h => h.action === 'CANCELLED').length
+
   const filteredFeedback = feedback.filter((f) => {
     if (!f.timestamp) return false
     const date = new Date(f.timestamp)
@@ -1598,6 +1681,177 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
       </div>
 
       <div className="admin-content">
+        {/* Admin Waiting Lists & Community Chat Management Section */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px', marginBottom: '24px' }}>
+          {/* Washer Waiting List */}
+          <section style={{ background: '#FFF', padding: '16px', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+            <h3 style={{ color: '#1E40AF', marginBottom: '12px' }}>🧺 Washer Waitlist ({washerWaitlist.length})</h3>
+            {washerWaitlist.length === 0 ? (
+              <p className="empty-text">No users in washer waitlist.</p>
+            ) : (
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: '8px' }}>
+                {washerWaitlist.map((item, idx) => (
+                  <li key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#F8FAFC', padding: '8px 12px', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
+                    <span style={{ fontSize: '0.9rem' }}>#{idx + 1} User {item.userId}</span>
+                    <button
+                      className="btn btn-xs btn-danger"
+                      onClick={() => {
+                        if (window.confirm(`Are you sure you want to remove User ${item.userId} from washer waitlist?`)) {
+                          leaveWaitlist('washer', item.id)
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* Dryer Waiting List */}
+          <section style={{ background: '#FFF', padding: '16px', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+            <h3 style={{ color: '#92400E', marginBottom: '12px' }}>💨 Dryer Waitlist ({dryerWaitlist.length})</h3>
+            {dryerWaitlist.length === 0 ? (
+              <p className="empty-text">No users in dryer waitlist.</p>
+            ) : (
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: '8px' }}>
+                {dryerWaitlist.map((item, idx) => (
+                  <li key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#FFFBEB', padding: '8px 12px', borderRadius: '6px', border: '1px solid #FDE68A' }}>
+                    <span style={{ fontSize: '0.9rem' }}>#{idx + 1} User {item.userId}</span>
+                    <button
+                      className="btn btn-xs btn-danger"
+                      onClick={() => {
+                        if (window.confirm(`Are you sure you want to remove User ${item.userId} from dryer waitlist?`)) {
+                          leaveWaitlist('dryer', item.id)
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+
+        {/* Community Chat Management Section */}
+        <section style={{ background: '#FFF', padding: '16px', borderRadius: '8px', border: '1px solid #E2E8F0', marginBottom: '24px' }}>
+          <h3 style={{ marginBottom: '12px' }}>💬 Community Chat Moderation ({chatMessages.length} messages)</h3>
+          <p style={{ color: '#64748B', fontSize: '0.85rem', marginBottom: '16px' }}>
+            Admins can manually delete community chat messages silently without users knowing.
+          </p>
+          {chatMessages.length === 0 ? (
+            <p className="empty-text">No community chat messages.</p>
+          ) : (
+            <div style={{ maxHeight: '300px', overflowY: 'auto', display: 'grid', gap: '8px', border: '1px solid #E2E8F0', padding: '12px', borderRadius: '8px', background: '#F8FAFC' }}>
+              {chatMessages.map((m) => (
+                <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', background: '#FFF', padding: '10px', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
+                  <div>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#2563EB' }}>User {m.userId} <span style={{ fontWeight: 'normal', color: '#64748B', marginLeft: '6px' }}>{formatMYTime(m.timestamp)}</span></div>
+                    <div style={{ fontSize: '0.95rem', marginTop: '4px', color: '#1E293B' }}>{m.message}</div>
+                  </div>
+                  <button
+                    className="btn btn-xs btn-danger"
+                    title="Delete message silently"
+                    onClick={() => {
+                      if (window.confirm('Are you sure you want to delete this message?')) {
+                        unsendChatMessage(m.id)
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Admin Dashboard Section */}
+        <section style={{ background: '#FFF', padding: '16px', borderRadius: '8px', border: '1px solid #E2E8F0', marginBottom: '24px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <h3 style={{ margin: 0 }}>📊 Admin Metrics Dashboard</h3>
+              <p style={{ color: '#64748B', fontSize: '0.85rem', margin: '4px 0 0 0' }}>
+                Overview of completed, in-progress, and cancelled machine cycles.
+              </p>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowDashboard(!showDashboard)}>
+              {showDashboard ? 'Hide Dashboard ▲' : 'Expand Dashboard ▼'}
+            </button>
+          </div>
+
+          {showDashboard && (
+            <div style={{ marginTop: '16px', borderTop: '1px solid #E2E8F0', paddingTop: '16px' }}>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '16px' }}>
+                <label style={{ fontWeight: '500', fontSize: '0.9rem' }}>Filter Dashboard By:</label>
+                <select
+                  value={dashFilterType}
+                  onChange={(e) => setDashFilterType(e.target.value)}
+                  style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                >
+                  <option value="all">All Time</option>
+                  <option value="date">Date</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="year">Year</option>
+                </select>
+
+                {dashFilterType === 'date' && (
+                  <input
+                    type="date"
+                    value={dashDate}
+                    onChange={(e) => setDashDate(e.target.value)}
+                    style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                  />
+                )}
+                {dashFilterType === 'week' && (
+                  <input
+                    type="week"
+                    value={dashWeek}
+                    onChange={(e) => setDashWeek(e.target.value)}
+                    style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                  />
+                )}
+                {dashFilterType === 'month' && (
+                  <input
+                    type="month"
+                    value={dashMonth}
+                    onChange={(e) => setDashMonth(e.target.value)}
+                    style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF' }}
+                  />
+                )}
+                {dashFilterType === 'year' && (
+                  <input
+                    type="number"
+                    placeholder="YYYY"
+                    value={dashYear}
+                    onChange={(e) => setDashYear(e.target.value)}
+                    style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', background: '#FFF', width: '100px' }}
+                  />
+                )}
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+                <div style={{ background: '#EFF6FF', padding: '16px', borderRadius: '8px', border: '1px solid #BFDBFE' }}>
+                  <div style={{ fontSize: '0.9rem', color: '#1E40AF', fontWeight: '500' }}>Completed Cycles</div>
+                  <div style={{ fontSize: '1.8rem', fontWeight: 'bold', color: '#1D4ED8', marginTop: '6px' }}>{totalCompletedCycles}</div>
+                </div>
+                <div style={{ background: '#FFFBEB', padding: '16px', borderRadius: '8px', border: '1px solid #FDE68A' }}>
+                  <div style={{ fontSize: '0.9rem', color: '#92400E', fontWeight: '500' }}>Cycles In Progress</div>
+                  <div style={{ fontSize: '1.8rem', fontWeight: 'bold', color: '#B45309', marginTop: '6px' }}>{totalInProgressCycles}</div>
+                </div>
+                <div style={{ background: '#FEF2F2', padding: '16px', borderRadius: '8px', border: '1px solid #FECACA' }}>
+                  <div style={{ fontSize: '0.9rem', color: '#991B1B', fontWeight: '500' }}>Cancelled Cycles</div>
+                  <div style={{ fontSize: '1.8rem', fontWeight: 'bold', color: '#DC2626', marginTop: '6px' }}>{totalCancelledCycles}</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
         <section style={{ background: '#FFF', padding: '16px', borderRadius: '8px', border: '1px solid #E2E8F0', marginBottom: '24px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setShowExportSection(!showExportSection)}>
             <div>
