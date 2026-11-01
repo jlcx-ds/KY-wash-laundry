@@ -1598,7 +1598,7 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
     return dateStr === previewFilterDay
   })
 
-  // Dashboard metrics calculation based on filters
+  // Dashboard metrics calculation based on filters (including FORCED_EMPTY as completed washing cycles)
   const filteredDashRecords = allHistoryRecords.filter((h) => {
     if (!h.timestamp) return false
     const date = new Date(h.timestamp)
@@ -1621,7 +1621,7 @@ function AdminPage({ machines, feedback, issues, onLock, onResolveIssue, onDelet
     return true
   })
 
-  const totalCompletedCycles = filteredDashRecords.filter(h => h.action === 'COLLECTED').length
+  const totalCompletedCycles = filteredDashRecords.filter(h => h.action === 'COLLECTED' || h.action === 'FORCED_EMPTY').length
   const totalInProgressCycles = machines.filter(m => m.status === 'running').length
   const totalCancelledCycles = filteredDashRecords.filter(h => h.action === 'CANCELLED').length
 
@@ -2477,6 +2477,10 @@ export default function App() {
           <FeedbackTab currentUser={currentUser} onSubmit={handleFeedback} />
         )}
         {activeTab === 'profile' && <ProfileTab currentUser={currentUser} onUpdate={handleProfileUpdate} />}
+      </div>
+
+      <div style={{ textAlign: 'center', padding: '16px', fontSize: '0.8rem', color: '#64748B', borderTop: '1px solid #E2E8F0', marginTop: '24px' }}>
+        KY WASH is an independent student-run initiative, not an official college service.
       </div>
 
       <ChatWidget messages={chat} currentUserId={currentUser.userId} onSend={handleSendChat} onUnsend={handleUnsendChat} />
